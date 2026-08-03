@@ -1,0 +1,16 @@
+{
+	"required": true,
+	"package": "com.kohs.deatheffects.client.mixin",
+	"compatibilityLevel": "JAVA_21",
+	"client": [
+		"LivingEntityClientMixin",
+		"LivingEntitySoundInvoker",
+		"SourceAccessor",
+		"StaticSoundAccessor",
+		"SoundManagerAccessor",
+		"SoundSystemAccessor"
+	],
+	"injectors": {
+		"defaultRequire": 1
+	}
+}

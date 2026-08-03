@@ -1,0 +1,39 @@
+{
+	"schemaVersion": 1,
+	"id": "${mod_id}",
+	"version": "${version}",
+	"name": "${mod_name}",
+	"description": "Custom death effects for Minecraft.",
+	"icon": "assets/kohs_death_effects/icon.png",
+	"authors": [
+		"zymekoh"
+	],
+	"license": "MIT",
+	"environment": "*",
+	"entrypoints": {
+		"main": [
+			"com.kohs.deatheffects.KohsDeathEffects"
+		],
+		"client": [
+			"com.kohs.deatheffects.client.KohsDeathEffectsClient"
+		],
+		"modmenu": [
+			"com.kohs.deatheffects.client.config.KohsDeathEffectsModMenu"
+		]
+	},
+	"mixins": [
+		{
+			"config": "kohs_death_effects.client.mixins.json",
+			"environment": "client"
+		}
+	],
+	"depends": {
+		"fabricloader": ">=0.19.2",
+		"minecraft": "~${minecraft_version}",
+		"java": ">=25",
+		"fabric-api": "*"
+	},
+	"suggests": {
+		"modmenu": "*"
+	}
+}
