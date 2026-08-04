@@ -28,7 +28,7 @@ import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.util.math.Vec3d;
 
 public final class DeathEffectManager {
-	private static final int DEATH_SPAWN_LOCK_TICKS = 40;
+	private static final int DEATH_SPAWN_LOCK_TICKS = 4;
 
 	private final List<RisingSilhouetteEffect> effects = new ArrayList<>();
 	private final Set<UUID> playersCurrentlyDead = new HashSet<>();
@@ -58,7 +58,7 @@ public final class DeathEffectManager {
 
 	public void spawnForDeath(PlayerEntity player) {
 		KohsDeathEffectsConfig config = KohsDeathEffectsConfig.get();
-		if (!config.effectsEnabled || !config.selectedEffectEnabled()) {
+		if (!config.effectsEnabled) {
 			return;
 		}
 
@@ -110,7 +110,7 @@ public final class DeathEffectManager {
 		}
 
 		KohsDeathEffectsConfig config = KohsDeathEffectsConfig.get();
-		if (!config.effectsEnabled || !config.selectedEffectEnabled()) {
+		if (!config.effectsEnabled) {
 			this.effects.clear();
 			MorphMobSoundPlayer.clear();
 			this.playersCurrentlyDead.clear();
@@ -124,7 +124,7 @@ public final class DeathEffectManager {
 		for (AbstractClientPlayerEntity player : client.world.getPlayers()) {
 			if (player.isAlive() && player.deathTime == 0 && !this.deathSpawnLocks.containsKey(player.getUuid())) {
 				this.playersCurrentlyDead.remove(player.getUuid());
-			} else if (player.isDead() || player.deathTime > 0) {
+			} else if (player.getHealth() <= 0.0F || player.isDead() || player.deathTime > 0) {
 				this.spawnForDeath(player);
 			}
 		}

@@ -255,7 +255,7 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 
 	@Override
 	public boolean mouseScrolled(double mouseX, double mouseY, double horizontalAmount, double verticalAmount) {
-		if (this.currentTab == MainTab.EFFECTS && this.currentEffectTab == EffectTab.MORPH && this.isMouseOverPreview(mouseX, mouseY)) {
+		if (this.previewCanOrbit() && this.isMouseOverPreview(mouseX, mouseY)) {
 			this.morphPreviewZoom = MathHelper.clamp(this.morphPreviewZoom + (float)verticalAmount * 0.12F, 0.45F, 2.5F);
 			return true;
 		}
@@ -271,7 +271,7 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 
 	@Override
 	public boolean mouseDragged(double mouseX, double mouseY, int button, double deltaX, double deltaY) {
-		if (button == 0 && this.currentTab == MainTab.EFFECTS && this.currentEffectTab == EffectTab.MORPH && this.isMouseOverPreview(mouseX, mouseY)) {
+		if (button == 0 && this.previewCanOrbit() && this.isMouseOverPreview(mouseX, mouseY)) {
 			this.morphPreviewYawOffset = MathHelper.clamp(this.morphPreviewYawOffset + (float)deltaX * 1.6F, -140.0F, 140.0F);
 			this.morphPreviewPitchOffset = MathHelper.clamp(this.morphPreviewPitchOffset + (float)deltaY * 1.2F, -80.0F, 80.0F);
 			return true;
@@ -331,6 +331,9 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 		this.currentEffectTab = tab;
 		this.activateOnlyEffect(tab, true);
 		this.scrollOffset = 0;
+		this.morphPreviewYawOffset = 0.0F;
+		this.morphPreviewPitchOffset = 0.0F;
+		this.morphPreviewZoom = 1.0F;
 		this.restartPreview();
 		this.clearAndInit();
 	}
@@ -868,8 +871,8 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 		float progress = this.previewProgress();
 		switch (this.currentEffectTab) {
 			case SILHOUETTE -> this.drawSilhouettePreview(context, innerLeft, innerTop, innerRight, innerBottom, progress);
-			case PLAYER -> this.drawGifPlaceholder(context, innerLeft, innerTop, innerRight, innerBottom, "GIF jugador");
-			case RAGDOLL -> this.drawGifPlaceholder(context, innerLeft, innerTop, innerRight, innerBottom, "GIF ragdoll");
+			case PLAYER -> this.drawPlayerPreview(context, innerLeft, innerTop, innerRight, innerBottom, progress);
+			case RAGDOLL -> this.drawRagdollPreview(context, innerLeft, innerTop, innerRight, innerBottom, progress);
 			case MORPH -> this.drawMorphPreview(context, innerLeft, innerTop, innerRight, innerBottom, progress);
 		}
 
@@ -890,7 +893,8 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 	}
 
 	private void drawSilhouettePreview(DrawContext context, int left, int top, int right, int bottom, float progress) {
-		float fade = this.config.risingSilhouetteEnabled ? silhouetteFade(progress) * this.config.silhouetteAlpha : 0.18F;
+		float previewVisibility = 0.18F + silhouetteFade(progress) * 0.82F;
+		float fade = this.config.risingSilhouetteEnabled ? previewVisibility * this.config.silhouetteAlpha : 0.18F;
 		int alpha = MathHelper.clamp((int)(fade * 255.0F), 24, 255);
 		int width = right - left;
 		int height = bottom - top;
@@ -899,7 +903,7 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 		int previewTop = top - lift;
 		int previewBottom = bottom - lift;
 		float baseScale = MathHelper.clamp(Math.min(width, height) / 2.0F, 28.0F, 62.0F);
-		float scale = MathHelper.clamp(baseScale * this.config.silhouetteScale, 18.0F, 96.0F);
+		float scale = MathHelper.clamp(baseScale * this.config.silhouetteScale * this.morphPreviewZoom, 18.0F, 128.0F);
 
 		this.drawSilhouetteModel(context, left, previewTop, right, previewBottom, scale, alpha);
 	}
@@ -912,7 +916,7 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 		int lift = (int)(rise * Math.max(10, height - 68));
 		int previewTop = top - lift;
 		int previewBottom = bottom - lift;
-		int size = MathHelper.clamp(Math.min(width, height) / 2, 28, 62);
+		int size = MathHelper.clamp((int)(Math.min(width, height) * 0.5F * this.morphPreviewZoom), 18, 96);
 		PreviewPlayerEntity entity = this.getPreviewPlayer();
 
 		if (entity == null) {
@@ -929,8 +933,8 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 			previewBottom,
 			size,
 			0.0625F,
-			(left + right) / 2.0F,
-			(previewTop + previewBottom) / 2.0F,
+			(left + right) / 2.0F + this.morphPreviewYawOffset,
+			(previewTop + previewBottom) / 2.0F + this.morphPreviewPitchOffset,
 			entity
 		);
 		float fade = this.config.playerGhostEnabled ? (1.0F - progress) * this.config.playerGhostAlpha : 0.24F;
@@ -949,15 +953,19 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 
 		int width = right - left;
 		int height = bottom - top;
-		float scale = MathHelper.clamp(Math.min(width, height) / 1.45F, 36.0F, 96.0F);
+		float scale = MathHelper.clamp(
+			Math.min(width / 1.75F, height / 0.95F) * this.morphPreviewZoom,
+			22.0F,
+			128.0F
+		);
 		float wobble = this.config.ragdollClientCollisionEnabled ? MathHelper.sin(progress * (float)(Math.PI * 2.0)) * 8.0F : 0.0F;
 		float impact = MathHelper.sin(MathHelper.clamp(elapsedTicks / 13.0F, 0.0F, 1.0F) * (float)Math.PI) * 7.0F * damping;
 		context.addPlayerSkin(
 			model,
 			previewSkinTextures.texture(),
 			scale,
-			MathHelper.lerp(fall, 5.0F, 78.0F) + impact,
-			205.0F + wobble + MathHelper.sin(elapsedTicks * 0.34F) * 4.0F * damping,
+			MathHelper.lerp(fall, 5.0F, 78.0F) + impact + MathHelper.clamp(this.morphPreviewPitchOffset, -18.0F, 18.0F),
+			205.0F + wobble + MathHelper.sin(elapsedTicks * 0.34F) * 4.0F * damping + MathHelper.clamp(this.morphPreviewYawOffset, -45.0F, 45.0F),
 			0.96F,
 			left,
 			top,
@@ -1009,12 +1017,27 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 		PlayerEntityModel model = this.getSilhouettePreviewModel();
 		PlayerEntityRenderState state = this.createSilhouettePreviewState();
 		model.setAngles(state);
+		showAllPlayerModelParts(model);
+		float pitch = MathHelper.clamp(this.morphPreviewPitchOffset, -35.0F, 35.0F);
+		float yaw = 180.0F + this.morphPreviewYawOffset;
+		context.addPlayerSkin(
+			model,
+			previewSkinTextures.texture(),
+			scale,
+			pitch,
+			yaw,
+			1.6F,
+			left,
+			top,
+			right,
+			bottom
+		);
 		context.addPlayerSkin(
 			model,
 			getSilhouettePreviewTexture(ColorHelper.withAlpha(alpha, this.config.silhouetteColor)),
 			scale,
-			0.0F,
-			180.0F,
+			pitch,
+			yaw,
 			1.6F,
 			left,
 			top,
@@ -1132,6 +1155,21 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 		model.leftPants.copyTransform(model.leftLeg);
 		model.rightPants.copyTransform(model.rightLeg);
 		model.jacket.copyTransform(model.body);
+	}
+
+	private static void showAllPlayerModelParts(PlayerEntityModel model) {
+		model.head.visible = true;
+		model.hat.visible = true;
+		model.body.visible = true;
+		model.jacket.visible = true;
+		model.rightArm.visible = true;
+		model.rightSleeve.visible = true;
+		model.leftArm.visible = true;
+		model.leftSleeve.visible = true;
+		model.rightLeg.visible = true;
+		model.rightPants.visible = true;
+		model.leftLeg.visible = true;
+		model.leftPants.visible = true;
 	}
 
 	private PreviewPlayerEntity getPreviewPlayer() {
@@ -1499,6 +1537,14 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 			&& mouseX <= this.previewX + this.previewWidth
 			&& mouseY >= this.previewY
 			&& mouseY <= this.previewY + this.previewHeight;
+	}
+
+	private boolean previewCanOrbit() {
+		return this.currentTab == MainTab.EFFECTS
+			&& (this.currentEffectTab == EffectTab.SILHOUETTE
+				|| this.currentEffectTab == EffectTab.PLAYER
+				|| this.currentEffectTab == EffectTab.RAGDOLL
+				|| this.currentEffectTab == EffectTab.MORPH);
 	}
 
 	private float previewProgress() {

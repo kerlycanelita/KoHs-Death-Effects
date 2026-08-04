@@ -375,6 +375,9 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 		this.currentEffectTab = tab;
 		this.activateOnlyEffect(tab, true);
 		this.scrollOffset = 0;
+		this.morphPreviewYawOffset = 0.0F;
+		this.morphPreviewPitchOffset = 0.0F;
+		this.morphPreviewZoom = 1.0F;
 		this.restartPreview();
 		this.rebuildWidgets();
 	}
@@ -1027,16 +1030,17 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 	}
 
 	private void drawSilhouettePreview(GuiGraphicsExtractor context, int left, int top, int right, int bottom, float progress) {
-		float fade = this.config.risingSilhouetteEnabled ? silhouetteFade(progress) * this.config.silhouetteAlpha : 0.18F;
+		float previewVisibility = 0.18F + silhouetteFade(progress) * 0.82F;
+		float fade = this.config.risingSilhouetteEnabled ? previewVisibility * this.config.silhouetteAlpha : 0.18F;
 		int alpha = Mth.clamp((int)(fade * 255.0F), 0, 255);
 		int width = right - left;
 		int height = bottom - top;
 		float rise = this.config.risingSilhouetteEnabled ? easeOutCubic(progress) : 0.0F;
 		int lift = (int)(rise * Math.max(8, height - 68));
-		int previewTop = top;
-		int previewBottom = bottom;
+		int previewTop = top - lift;
+		int previewBottom = bottom - lift;
 		float baseScale = Mth.clamp(Math.min(width, height) / 2.0F, 28.0F, 62.0F);
-		float scale = Mth.clamp(baseScale * this.config.silhouetteScale, 18.0F, 96.0F);
+		float scale = Mth.clamp(baseScale * this.config.silhouetteScale * this.morphPreviewZoom, 18.0F, 128.0F);
 
 		this.drawSilhouetteModel(context, left, previewTop, right, previewBottom, scale, alpha);
 		int coverAlpha = 255 - alpha;
@@ -1104,7 +1108,11 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 		int cameraTop = top + cameraInsetY;
 		int cameraRight = right - cameraInsetX;
 		int cameraBottom = bottom - cameraInsetY;
-		float scale = Mth.clamp(Math.min(cameraRight - cameraLeft, cameraBottom - cameraTop) / 1.70F * this.morphPreviewZoom, 20.0F, 96.0F);
+		float scale = Mth.clamp(
+			Math.min((cameraRight - cameraLeft) / 1.75F, (cameraBottom - cameraTop) / 0.95F) * this.morphPreviewZoom,
+			22.0F,
+			128.0F
+		);
 		float crawlTurn = -crawlAmount * 42.0F;
 		int coverAlpha = progress > 0.82F ? Mth.clamp((int)((progress - 0.82F) / 0.18F * 190.0F), 0, 190) : 0;
 		context.skin(
@@ -1268,12 +1276,15 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 		PlayerModel model = this.getSilhouettePreviewModel();
 		AvatarRenderState state = this.createSilhouettePreviewState();
 		model.setupAnim(state);
+		showAllPlayerModelParts(model);
+		float pitch = Mth.clamp(this.morphPreviewPitchOffset, -35.0F, 35.0F);
+		float yaw = 180.0F + this.morphPreviewYawOffset;
 		context.skin(
 			previewModel(model),
 			this.currentPreviewSkin().body().texturePath(),
 			scale,
-			0.0F,
-			180.0F,
+			pitch,
+			yaw,
 			1.6F,
 			left,
 			top,
@@ -1285,8 +1296,8 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 			previewModel(model),
 			getSilhouettePreviewTexture(ARGB.color(tintAlpha, this.config.silhouetteColor)),
 			scale,
-			0.0F,
-			180.0F,
+			pitch,
+			yaw,
 			1.6F,
 			left,
 			top,
@@ -2066,9 +2077,9 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 
 	private boolean previewCanOrbit() {
 		return this.currentTab == MainTab.EFFECTS
-			&& (this.currentEffectTab == EffectTab.PLAYER
+			&& (this.currentEffectTab == EffectTab.SILHOUETTE
+				|| this.currentEffectTab == EffectTab.PLAYER
 				|| this.currentEffectTab == EffectTab.RAGDOLL
-				|| this.currentEffectTab == EffectTab.KIDS
 				|| this.currentEffectTab == EffectTab.MORPH);
 	}
 
