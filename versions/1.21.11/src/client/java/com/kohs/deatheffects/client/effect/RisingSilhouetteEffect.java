@@ -1,6 +1,7 @@
 package com.kohs.deatheffects.client.effect;
 
 import java.util.List;
+import java.util.UUID;
 
 import com.kohs.deatheffects.KohsDeathEffects;
 import com.kohs.deatheffects.KohsDeathEffectsConfig;
@@ -98,6 +99,8 @@ public final class RisingSilhouetteEffect {
 	private final Entity morphEntity;
 	private final FaintAnimationType faintAnimationType;
 	private final int faintCrawlSpeed;
+	private final UUID faintCrawlTargetUuid;
+	private final Vec3d faintCrawlFallbackTarget;
 	private final PoseSnapshot pose;
 	private final RagdollShape ragdollShape;
 	private final RagdollBody ragdollBody;
@@ -130,6 +133,8 @@ public final class RisingSilhouetteEffect {
 		Entity morphEntity,
 		FaintAnimationType faintAnimationType,
 		int faintCrawlSpeed,
+		UUID faintCrawlTargetUuid,
+		Vec3d faintCrawlFallbackTarget,
 		Vec3d ragdollExplosionImpulse,
 		PoseSnapshot pose
 	) {
@@ -149,6 +154,8 @@ public final class RisingSilhouetteEffect {
 		this.morphEntity = morphEntity;
 		this.faintAnimationType = faintAnimationType == null ? FaintAnimationType.FALL : faintAnimationType;
 		this.faintCrawlSpeed = MathHelper.clamp(faintCrawlSpeed, 100, 300);
+		this.faintCrawlTargetUuid = faintCrawlTargetUuid;
+		this.faintCrawlFallbackTarget = faintCrawlFallbackTarget;
 		this.pose = pose;
 		this.ragdollShape = RagdollShape.from(pose);
 		this.ragdollBody = null;
@@ -156,20 +163,36 @@ public final class RisingSilhouetteEffect {
 	}
 
 	public static RisingSilhouetteEffect from(PlayerEntity player, KohsDeathEffectsConfig config) {
-		return from(player, config, false, null);
+		return from(player, config, false, null, null);
 	}
 
 	public static RisingSilhouetteEffect from(PlayerEntity player, KohsDeathEffectsConfig config, boolean explosionDeath, Vec3d explosionPosition) {
+		return from(player, config, explosionDeath, explosionPosition, null);
+	}
+
+	public static RisingSilhouetteEffect from(
+		PlayerEntity player,
+		KohsDeathEffectsConfig config,
+		boolean explosionDeath,
+		Vec3d explosionPosition,
+		PlayerEntity crawlTarget
+	) {
 		DeathEffectMode mode = config.deathEffectMode;
 		GhostMovementMode movementMode = mode == DeathEffectMode.PLAYER_GHOST ? config.playerGhostMovement : GhostMovementMode.RISING;
+		Vec3d deathPosition = entityPosition(player);
+		Vec3d crawlFallbackTarget = crawlTarget == null
+			? environmentalCrawlTarget(player, deathPosition)
+			: entityPosition(crawlTarget);
 
 		return new RisingSilhouetteEffect(
-			entityPosition(player),
+			deathPosition,
 			mode,
 			movementMode,
 			config.silhouetteColor,
 			mode == DeathEffectMode.SILHOUETTE ? config.silhouetteScale : 1.0F,
-			mode == DeathEffectMode.PLAYER_GHOST ? config.playerGhostAlpha : mode == DeathEffectMode.MORPH ? config.morphAlpha : 1.0F,
+			mode == DeathEffectMode.PLAYER_GHOST
+				? config.playerGhostAlpha
+				: mode == DeathEffectMode.MORPH ? config.morphAlpha : mode == DeathEffectMode.SILHOUETTE ? config.silhouetteAlpha : 1.0F,
 			durationTicks(config, mode),
 			mode == DeathEffectMode.PLAYER_GHOST ? config.playerGhostRiseHeight : mode == DeathEffectMode.MORPH ? 7.0F : config.silhouetteRiseHeight,
 			mode == DeathEffectMode.PLAYER_GHOST && (config.playerGhostArmorEnabled || config.playerGhostHeldItemsEnabled),
@@ -180,9 +203,16 @@ public final class RisingSilhouetteEffect {
 			createMorphEntity(player, config),
 			config.faintAnimationType,
 			config.faintCrawlSpeed,
-			Vec3d.ZERO,
+			crawlTarget == null ? null : crawlTarget.getUuid(),
+			crawlFallbackTarget,
+			createExplosionImpulse(player, config, explosionDeath, explosionPosition),
 			PoseSnapshot.from(player, config)
 		);
+	}
+
+	private static Vec3d environmentalCrawlTarget(PlayerEntity player, Vec3d deathPosition) {
+		double yaw = Math.toRadians(player.getYaw());
+		return deathPosition.add(-Math.sin(yaw) * 2.5, 0.0, Math.cos(yaw) * 2.5);
 	}
 
 	private static Entity createMorphEntity(PlayerEntity player, KohsDeathEffectsConfig config) {
@@ -241,6 +271,55 @@ public final class RisingSilhouetteEffect {
 		this.ageTicks++;
 	}
 
+	/** Returns the same animation state consumed by the in-world renderer. */
+	public PreviewFrame previewFrame(float tickProgress) {
+		float elapsedTicks = this.ageTicks + MathHelper.clamp(tickProgress, 0.0F, 1.0F);
+		float progress = MathHelper.clamp(elapsedTicks / (float)this.durationTicks, 0.0F, 1.0F);
+		float fall = 0.0F;
+		float settle = 0.0F;
+		float crawlAmount = 0.0F;
+		float crawlCycle = 0.0F;
+		float bodyYaw = this.pose.state().bodyYaw;
+		if (this.mode == DeathEffectMode.RAGDOLL) {
+			fall = MathHelper.clamp(elapsedTicks / (float)this.faintFallDurationTicks, 0.0F, 1.0F);
+			settle = MathHelper.clamp((elapsedTicks - this.faintFallDurationTicks) / (float)FAINT_SETTLE_TICKS, 0.0F, 1.0F);
+			crawlAmount = this.getFaintCrawlAmount(elapsedTicks);
+			crawlCycle = crawlAmount > 0.0F && !this.faintReachedTarget
+				? MathHelper.sin(elapsedTicks * (0.34F + this.faintCrawlSpeed / 260.0F))
+				: 0.0F;
+			bodyYaw = this.getFaintBodyYaw(this.pose.state(), crawlAmount);
+		}
+
+		return new PreviewFrame(
+			this.mode,
+			elapsedTicks,
+			progress,
+			MathHelper.clamp(this.alpha * this.getFade(progress, elapsedTicks), 0.0F, 1.0F),
+			this.shouldRise() ? easeOutCubic(progress) : 0.0F,
+			fall,
+			settle,
+			crawlAmount,
+			crawlCycle,
+			bodyYaw,
+			this.isExpired()
+		);
+	}
+
+	public record PreviewFrame(
+		DeathEffectMode mode,
+		float elapsedTicks,
+		float progress,
+		float alpha,
+		float riseProgress,
+		float faintFall,
+		float faintSettle,
+		float faintCrawlAmount,
+		float faintCrawlCycle,
+		float faintBodyYaw,
+		boolean expired
+	) {
+	}
+
 	private void tickFaint() {
 		if (this.mode != DeathEffectMode.RAGDOLL) {
 			return;
@@ -252,14 +331,13 @@ public final class RisingSilhouetteEffect {
 			return;
 		}
 
-		MinecraftClient client = MinecraftClient.getInstance();
-		if (this.faintAnimationType == FaintAnimationType.CRAWL && !this.faintReachedTarget && client.player != null) {
+		if (this.faintAnimationType == FaintAnimationType.CRAWL && !this.faintReachedTarget) {
 			int crawlPrepareTick = impactTick + FAINT_CRAWL_GROUND_HOLD_TICKS;
 			if (this.ageTicks < crawlPrepareTick) {
 				return;
 			}
 
-			Vec3d target = entityPosition(client.player).subtract(this.position);
+			Vec3d target = this.resolveFaintCrawlTarget().subtract(this.position);
 			Vec3d horizontalTarget = new Vec3d(target.x, 0.0, target.z);
 			Vec3d delta = horizontalTarget.subtract(this.faintCrawlOffset);
 			double distance = delta.length();
@@ -286,6 +364,18 @@ public final class RisingSilhouetteEffect {
 		if (this.faintReachedTarget || this.ageTicks >= FAINT_DEFAULT_FADE_START_TICKS) {
 			this.faintFadeTicks++;
 		}
+	}
+
+	private Vec3d resolveFaintCrawlTarget() {
+		MinecraftClient client = MinecraftClient.getInstance();
+		if (this.faintCrawlTargetUuid != null && client.world != null) {
+			for (AbstractClientPlayerEntity player : client.world.getPlayers()) {
+				if (this.faintCrawlTargetUuid.equals(player.getUuid())) {
+					return entityPosition(player);
+				}
+			}
+		}
+		return this.faintCrawlFallbackTarget;
 	}
 
 	private void resolveFaintSurface() {

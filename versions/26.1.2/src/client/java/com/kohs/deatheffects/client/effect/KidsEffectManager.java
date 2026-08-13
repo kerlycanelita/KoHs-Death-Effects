@@ -118,9 +118,14 @@ public final class KidsEffectManager {
 
 		DamageSource source = victim.getLastDamageSource();
 		Entity attacker = source == null ? null : source.getEntity();
-		boolean localPlayerCausedDamage = attacker instanceof Player killer
-			&& killer.getUUID().equals(client.player.getUUID());
-		if (!localPlayerCausedDamage && !this.recentlyAttackedPlayers.containsKey(victim.getUUID())) {
+		Player carrier = attacker instanceof Player player ? player : victim.getLastHurtByPlayer();
+		if (carrier == null && victim.getLastAttacker() instanceof Player player) {
+			carrier = player;
+		}
+		if (carrier == null && this.recentlyAttackedPlayers.containsKey(victim.getUUID())) {
+			carrier = client.player;
+		}
+		if (carrier == null || carrier.getUUID().equals(victim.getUUID())) {
 			return;
 		}
 
@@ -131,7 +136,7 @@ public final class KidsEffectManager {
 
 		this.addDoll(
 			client,
-			client.player.getUUID(),
+			carrier.getUUID(),
 			UUID.randomUUID(),
 			victim.getUUID(),
 			victim.getName().getString(),
@@ -139,8 +144,48 @@ public final class KidsEffectManager {
 		);
 	}
 
-	public void setPreviewShoulders(int entityId, PlayerSkin skin, float wave) {
-		this.previewShoulderState = new PreviewShoulderState(entityId, skin, wave);
+	public void setPreviewShoulders(int entityId, PlayerSkin skin, float elapsedTicks, boolean animationEnabled) {
+		this.previewShoulderState = new PreviewShoulderState(entityId, skin, elapsedTicks, animationEnabled);
+	}
+
+	/**
+	 * Builds the GUI train from the same spacing, sway, facing and hand-animation
+	 * formulas used by the in-world Kids renderer.
+	 */
+	public KidsPreviewFrame previewFrame(KohsDeathEffectsConfig config, float elapsedTicks) {
+		float ropeSizeMultiplier = Mth.clamp(config.kidsRopeSizePercent / 100.0F, 1.0F, 3.0F);
+		List<Float> shoulderWaves = new ArrayList<>();
+		for (int index = 0; index < MAX_SHOULDER_KIDS; index++) {
+			shoulderWaves.add(config.kidsAnimationEnabled ? shoulderWave(elapsedTicks, index) : 0.0F);
+		}
+		List<DraggedDollPreview> draggedDolls = new ArrayList<>();
+		for (int draggedIndex = 0; draggedIndex < 3; draggedIndex++) {
+			float handWave = config.kidsAnimationEnabled && config.kidsDraggedHandMovementEnabled
+				? draggedHandWave(elapsedTicks, draggedIndex)
+				: 0.0F;
+			draggedDolls.add(new DraggedDollPreview(
+				(float)draggedDistance(draggedIndex, ropeSizeMultiplier),
+				(float)draggedSway(elapsedTicks, draggedIndex, ropeSizeMultiplier),
+				handWave
+			));
+		}
+
+		return new KidsPreviewFrame(
+			ropeSizeMultiplier,
+			draggedBodyPitch(config.kidsTrainFacing),
+			List.copyOf(shoulderWaves),
+			List.copyOf(draggedDolls)
+		);
+	}
+
+	public static void applyPreviewShoulderPose(PlayerModel model, float wave) {
+		applyShoulderPose(model, wave);
+		showAllParts(model);
+	}
+
+	public static void applyPreviewDraggedPose(PlayerModel model, float handWave) {
+		applyDraggedPose(model, handWave);
+		showAllParts(model);
 	}
 
 	public void clearPreviewShoulders(int entityId) {
@@ -283,6 +328,9 @@ public final class KidsEffectManager {
 		PreviewShoulderState preview = this.previewShoulderState;
 		if (preview != null && carrierRenderState.id == preview.entityId()) {
 			for (int index = 0; index < MAX_SHOULDER_KIDS; index++) {
+				float wave = preview.animationEnabled()
+					? shoulderWave(preview.elapsedTicks(), index)
+					: 0.0F;
 				this.submitShoulderDoll(
 					matrices,
 					commandQueue,
@@ -290,7 +338,7 @@ public final class KidsEffectManager {
 					carrierRenderState,
 					carrierModel,
 					preview.skin(),
-					preview.wave(),
+					wave,
 					SHOULDER_DOLL_SCALE,
 					255,
 					index
@@ -328,7 +376,7 @@ public final class KidsEffectManager {
 			}
 
 			float wave = state.settings.animationEnabled()
-				? Mth.sin((doll.ageTicks + tickProgress + index * 7.0F) * 0.38F)
+				? shoulderWave(doll.ageTicks + tickProgress, index)
 				: 0.0F;
 			float spawnScale = 0.65F + smoothStep(Mth.clamp(doll.ageTicks / 10.0F, 0.0F, 1.0F)) * 0.35F;
 			float scale = SHOULDER_DOLL_SCALE * spawnScale;
@@ -424,10 +472,10 @@ public final class KidsEffectManager {
 		for (int index = MAX_SHOULDER_KIDS; index < state.dolls.size(); index++) {
 			DollState doll = state.dolls.get(index);
 			int draggedIndex = index - MAX_SHOULDER_KIDS;
-			double distance = (DRAGGED_FIRST_DISTANCE + draggedIndex * DRAGGED_SPACING) * ropeSizeMultiplier;
+			double distance = draggedDistance(draggedIndex, ropeSizeMultiplier);
 			TrailSample trailSample = state.sampleTrail(carrierPos, distance, bodyYaw);
 			Vec3 right = new Vec3(-trailSample.direction().z, 0.0, trailSample.direction().x);
-			double sway = Mth.sin((doll.ageTicks + tickProgress) * 0.08F + draggedIndex * 0.75F) * 0.10 * ropeSizeMultiplier;
+			double sway = draggedSway(doll.ageTicks + tickProgress, draggedIndex, ropeSizeMultiplier);
 			double alternatingSide = ((draggedIndex & 1) == 0 ? -0.07 : 0.07) * ropeSizeMultiplier;
 			Vec3 horizontal = trailSample.position().add(right.scale(sway + alternatingSide));
 			double groundY = findGroundY(
@@ -444,10 +492,10 @@ public final class KidsEffectManager {
 			}
 			Vec3 position = new Vec3(horizontal.x, doll.smoothedGroundY + 0.04, horizontal.z);
 			float frantic = state.settings.animationEnabled() && state.settings.draggedHandMovementEnabled()
-				? Mth.sin((doll.ageTicks + tickProgress + draggedIndex * 5.0F) * 0.48F)
+				? draggedHandWave(doll.ageTicks + tickProgress, draggedIndex)
 				: 0.0F;
 			float trailYaw = yawFromBehindDirection(trailSample.direction());
-			float bodyPitch = state.settings.trainFacing() == KidsTrainFacing.LOOK_UP ? 90.0F : -90.0F;
+			float bodyPitch = draggedBodyPitch(state.settings.trainFacing());
 			this.renderDoll(context, doll, position, trailYaw, bodyPitch, DRAGGED_DOLL_SCALE * ropeSizeMultiplier, frantic, false, cameraPos);
 			Vec3 ropePoint = position.add(0.0, 0.08 * ropeSizeMultiplier, 0.0);
 			ropeSegments.add(new RopeSegment(previousRopePoint, ropePoint, doll.alpha()));
@@ -606,6 +654,26 @@ public final class KidsEffectManager {
 		model.rightLeg.yRot = 0.12F;
 		model.leftLeg.xRot = -0.12F;
 		model.leftLeg.yRot = -0.12F;
+	}
+
+	private static float shoulderWave(float elapsedTicks, int index) {
+		return Mth.sin((elapsedTicks + index * 7.0F) * 0.38F);
+	}
+
+	private static double draggedDistance(int draggedIndex, float ropeSizeMultiplier) {
+		return (DRAGGED_FIRST_DISTANCE + draggedIndex * DRAGGED_SPACING) * ropeSizeMultiplier;
+	}
+
+	private static double draggedSway(float elapsedTicks, int draggedIndex, float ropeSizeMultiplier) {
+		return Mth.sin(elapsedTicks * 0.08F + draggedIndex * 0.75F) * 0.10 * ropeSizeMultiplier;
+	}
+
+	private static float draggedHandWave(float elapsedTicks, int draggedIndex) {
+		return Mth.sin((elapsedTicks + draggedIndex * 5.0F) * 0.48F);
+	}
+
+	private static float draggedBodyPitch(KidsTrainFacing facing) {
+		return facing == KidsTrainFacing.LOOK_UP ? 90.0F : -90.0F;
 	}
 
 	private static void showAllParts(PlayerModel model) {
@@ -866,7 +934,13 @@ public final class KidsEffectManager {
 	private record RopeSegment(Vec3 from, Vec3 to, float alpha) {
 	}
 
-	private record PreviewShoulderState(int entityId, PlayerSkin skin, float wave) {
+	public record KidsPreviewFrame(float ropeSizeMultiplier, float bodyPitch, List<Float> shoulderWaves, List<DraggedDollPreview> draggedDolls) {
+	}
+
+	public record DraggedDollPreview(float distance, float sway, float handWave) {
+	}
+
+	private record PreviewShoulderState(int entityId, PlayerSkin skin, float elapsedTicks, boolean animationEnabled) {
 	}
 
 	private static final class DollState {

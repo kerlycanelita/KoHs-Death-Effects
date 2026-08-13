@@ -2,7 +2,7 @@
 
 [![Join Discord](https://img.shields.io/badge/Join_Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/9t2VxEF7UU)
 [![GitHub Issues](https://img.shields.io/badge/GitHub_Issues-181717?style=for-the-badge&logo=github&logoColor=white)](https://github.com/kerlycanelita/KoHs-Death-Effects/issues)
-[![License: MIT](https://img.shields.io/badge/License-MIT-B96BFF?style=for-the-badge)](LICENSE)
+[![License: All Rights Reserved](https://img.shields.io/badge/License-All_Rights_Reserved-B96BFF?style=for-the-badge)](LICENSE)
 
 KoHs Death Effects is a client-side Fabric mod that replaces Minecraft's standard player death presentation with configurable, animated effects. Minecraft **1.21.11 is the canonical implementation**; every other folder under `versions/` is a maintained compatibility port.
 
@@ -26,7 +26,7 @@ Shows the player's skin as a fading ghost. It supports rising or stationary move
 
 ### Faint
 
-Turns the death into a physical fall or crawl animation. The preview uses a centered follow-camera viewport so the model remains visible throughout the animation.
+Turns the death into a physical fall or crawl animation. Crawl follows the actual player killer; environmental deaths continue in the victim's facing direction. The preview uses a centered follow-camera viewport so the model remains visible throughout the animation.
 
 <table>
   <tr>
@@ -41,7 +41,7 @@ Turns the death into a physical fall or crawl animation. The preview uses a cent
 
 ### Kids
 
-Offers shoulder and train presentations. The configuration tab uses a dedicated reference image so both modes are immediately understandable.
+Offers shoulder and train presentations. The configuration tab shows an interactive preview driven by the same spacing and animation settings as the in-world effect.
 
 ![Kids shoulder and train preview](shulder%20and%20train.png)
 
@@ -111,4 +111,4 @@ Join the community on [Discord](https://discord.gg/9t2VxEF7UU), or report reprod
 
 ## License
 
-KoHs Death Effects is available under the [MIT License](LICENSE).
+KoHs Death Effects is distributed under [All Rights Reserved](LICENSE).

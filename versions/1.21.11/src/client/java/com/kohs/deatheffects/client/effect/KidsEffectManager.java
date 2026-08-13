@@ -118,9 +118,14 @@ public final class KidsEffectManager {
 
 		DamageSource source = victim.getRecentDamageSource();
 		Entity attacker = source == null ? null : source.getAttacker();
-		boolean localPlayerCausedDamage = attacker instanceof PlayerEntity killer
-			&& killer.getUuid().equals(client.player.getUuid());
-		if (!localPlayerCausedDamage && !this.recentlyAttackedPlayers.containsKey(victim.getUuid())) {
+		PlayerEntity carrier = attacker instanceof PlayerEntity player ? player : null;
+		if (carrier == null && victim.getLastAttacker() instanceof PlayerEntity player) {
+			carrier = player;
+		}
+		if (carrier == null && this.recentlyAttackedPlayers.containsKey(victim.getUuid())) {
+			carrier = client.player;
+		}
+		if (carrier == null || carrier.getUuid().equals(victim.getUuid())) {
 			return;
 		}
 
@@ -131,7 +136,7 @@ public final class KidsEffectManager {
 
 		this.addDoll(
 			client,
-			client.player.getUuid(),
+			carrier.getUuid(),
 			UUID.randomUUID(),
 			victim.getUuid(),
 			victim.getName().getString(),

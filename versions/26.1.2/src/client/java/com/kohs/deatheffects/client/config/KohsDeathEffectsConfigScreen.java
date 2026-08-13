@@ -22,8 +22,11 @@ import com.mojang.blaze3d.platform.NativeImage;
 import com.kohs.deatheffects.KohsDeathEffects;
 import com.kohs.deatheffects.KohsDeathEffectsConfig;
 import com.kohs.deatheffects.client.KohsDeathEffectsClient;
+import com.kohs.deatheffects.client.effect.DeathEffectPreviewSimulation;
+import com.kohs.deatheffects.client.effect.KidsEffectManager;
 import com.kohs.deatheffects.client.effect.MorphMobCatalog;
 import com.kohs.deatheffects.client.effect.MorphMobSoundPlayer;
+import com.kohs.deatheffects.client.effect.RisingSilhouetteEffect;
 import com.kohs.deatheffects.client.sound.DeathSoundManager;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.RenderPipelines;
@@ -37,6 +40,7 @@ import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.inventory.InventoryScreen;
 import net.minecraft.client.input.MouseButtonEvent;
 import net.minecraft.client.model.geom.ModelLayers;
+import net.minecraft.client.model.geom.ModelPart;
 import net.minecraft.client.model.player.PlayerModel;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.player.AbstractClientPlayer;
@@ -63,7 +67,12 @@ import net.minecraft.world.phys.Vec3;
 
 public final class KohsDeathEffectsConfigScreen extends Screen {
 	private static final int ROW_STEP = 34;
-	private static final int CHILD_INDENT = 14;
+	private static final int CHILD_INDENT = 12;
+	private static final int BACKGROUND_PARTICLE_COUNT = 96;
+	private static final float PREVIEW_MIN_ZOOM = 0.60F;
+	private static final float PREVIEW_MAX_ZOOM = 1.80F;
+	private static final float PREVIEW_TORSO_PIVOT_Y = -1.0625F;
+	private static final int KIDS_PREVIEW_TRAIN_DOLLS = 3;
 	private static final int KIDS_PREVIEW_ENTITY_ID = -1_947_021_111;
 	private static final String PREVIEW_PLAYER_NAME = "zymekoh";
 	private static final UUID PREVIEW_FALLBACK_UUID = UUID.nameUUIDFromBytes(("OfflinePlayer:" + PREVIEW_PLAYER_NAME).getBytes(StandardCharsets.UTF_8));
@@ -71,8 +80,11 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 	private static final HttpClient SKIN_HTTP_CLIENT = HttpClient.newHttpClient();
 	private static final Identifier SILHOUETTE_PREVIEW_TEXTURE_ID = Identifier.fromNamespaceAndPath(KohsDeathEffects.MOD_ID, "preview/silhouette");
 	private static final Identifier KIDS_PREVIEW_TEXTURE_ID = Identifier.fromNamespaceAndPath(KohsDeathEffects.MOD_ID, "kids_preview");
+	private static final Identifier PREVIEW_WORLD_TEXTURE_ID = Identifier.fromNamespaceAndPath(KohsDeathEffects.MOD_ID, "textures/gui/preview_world.png");
 	private static final int KIDS_PREVIEW_IMAGE_WIDTH = 476;
 	private static final int KIDS_PREVIEW_IMAGE_HEIGHT = 427;
+	private static final int PREVIEW_WORLD_IMAGE_WIDTH = 1920;
+	private static final int PREVIEW_WORLD_IMAGE_HEIGHT = 990;
 	private static CompletableFuture<PlayerSkin> previewSkinFuture;
 	private static PlayerSkin previewSkinTextures = DefaultPlayerSkin.get(PREVIEW_FALLBACK_PROFILE);
 	private static DynamicTexture silhouettePreviewTexture;
@@ -87,10 +99,10 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 		0xFF6363,
 		0xF8F8F2
 	};
-	private static final int COLOR_SCREEN_SHADE = 0x99140A24;
-	private static final int COLOR_PANEL = 0xCC140A24;
-	private static final int COLOR_PANEL_DARK = 0xD90C0616;
-	private static final int COLOR_PANEL_SOFT = 0xB81D0E35;
+	private static final int COLOR_SCREEN_SHADE = 0x660B0614;
+	private static final int COLOR_PANEL = 0x86170B2B;
+	private static final int COLOR_PANEL_DARK = 0xA00C0616;
+	private static final int COLOR_PANEL_SOFT = 0x721D0E35;
 	private static final int COLOR_PURPLE = 0xFF9D63FF;
 	private static final int COLOR_PURPLE_SOFT = 0x775E2DA8;
 	private static final int COLOR_PURPLE_DARK = 0xFF2A1648;
@@ -120,6 +132,8 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 	private int panelY;
 	private int panelWidth;
 	private int panelHeight;
+	private int headerHeight;
+	private int footerHeight;
 	private int sidebarWidth;
 	private int contentX;
 	private int contentY;
@@ -136,17 +150,29 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 	private int scrollOffset;
 	private int maxScroll;
 	private long previewStartedAt;
+	private final DeathEffectPreviewSimulation previewSimulation = new DeathEffectPreviewSimulation();
+	private boolean previewSimulationDirty = true;
+	private RisingSilhouetteEffect.PreviewFrame previewFrame;
 	private PreviewPlayerEntity previewPlayer;
 	private LivingEntity previewMorphEntity;
 	private String previewMorphEntityId = "";
 	private float morphPreviewYawOffset;
 	private float morphPreviewPitchOffset;
 	private float morphPreviewZoom = 1.0F;
+	private boolean previewPaused;
+	private float pausedPreviewProgress;
+	private float animatedMainTabX = Float.NaN;
+	private float animatedEffectTabX = Float.NaN;
+	private float animatedEffectTabY = Float.NaN;
 	private PlayerModel silhouettePreviewModel;
 	private boolean silhouettePreviewModelSlim;
 	private PlayerModel ragdollPreviewModel;
 	private boolean ragdollPreviewModelSlim;
-	private PlayerModel kidsDraggedPreviewModel;
+	private PlayerModel kidsCarrierPreviewModel;
+	private boolean kidsCarrierPreviewModelSlim;
+	private final PlayerModel[] kidsShoulderPreviewModels = new PlayerModel[2];
+	private boolean kidsShoulderPreviewModelSlim;
+	private final PlayerModel[] kidsDraggedPreviewModels = new PlayerModel[KIDS_PREVIEW_TRAIN_DOLLS];
 	private boolean kidsDraggedPreviewModelSlim;
 
 	public KohsDeathEffectsConfigScreen(Screen parent) {
@@ -159,6 +185,9 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 	}
 
 	private void clearAndInit() {
+		if (this.currentTab == MainTab.EFFECTS) {
+			this.restartPreview();
+		}
 		this.rebuildWidgets();
 	}
 
@@ -180,8 +209,17 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 			this.initAdvancedTab();
 		}
 
+		int footerY = this.panelY + this.panelHeight - this.footerHeight + 5;
+		int footerPadding = this.panelWidth < 360 ? 8 : 14;
+		int footerGap = 6;
+		int availableFooterWidth = Math.max(80, this.panelWidth - footerPadding * 2 - footerGap);
+		int resetWidth = Mth.clamp(availableFooterWidth * 58 / 100, 74, 104);
+		int doneWidth = Math.max(54, availableFooterWidth - resetWidth);
+		int doneX = this.panelX + this.panelWidth - footerPadding - doneWidth;
+		this.addRenderableWidget(this.purpleButton(Component.literal("Reset defaults"), button -> this.resetDefaults(),
+			doneX - footerGap - resetWidth, footerY, resetWidth, 20, ButtonTone.NORMAL));
 		this.addRenderableWidget(this.purpleButton(Component.literal("Done"), button -> this.onClose(),
-			this.panelX + this.panelWidth - 90, this.panelY + this.panelHeight - 30, 76, 20, ButtonTone.PRIMARY));
+			doneX, footerY, doneWidth, 20, ButtonTone.PRIMARY));
 	}
 
 	private void initSoundTab() {
@@ -264,6 +302,7 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 	@Override
 	public void extractRenderState(GuiGraphicsExtractor context, int mouseX, int mouseY, float deltaTicks) {
 		this.hoverRegions.clear();
+		this.advanceTabAnimations(deltaTicks);
 		this.drawFrame(context);
 		this.drawContent(context, mouseX, mouseY);
 		super.extractRenderState(context, mouseX, mouseY, deltaTicks);
@@ -274,11 +313,17 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 
 	@Override
 	public boolean mouseClicked(MouseButtonEvent click, boolean doubleClick) {
+		if (doubleClick && this.previewCanOrbit() && this.isMouseOverPreview(click.x(), click.y())) {
+			this.resetPreviewView();
+			return true;
+		}
+
 		if (this.currentTab == MainTab.EFFECTS && this.currentEffectTab == EffectTab.SILHOUETTE) {
 			for (Swatch swatch : this.swatches) {
 				if (swatch.contains(click.x(), click.y())) {
 					this.config.silhouetteColor = swatch.color();
 					this.config.save();
+					this.restartPreview();
 
 					if (this.colorField != null) {
 						this.colorField.setValue(formatColor(this.config.silhouetteColor));
@@ -295,7 +340,7 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 	@Override
 	public boolean mouseScrolled(double mouseX, double mouseY, double horizontalAmount, double verticalAmount) {
 		if (this.previewCanOrbit() && this.isMouseOverPreview(mouseX, mouseY)) {
-			this.morphPreviewZoom = Mth.clamp(this.morphPreviewZoom + (float)verticalAmount * 0.12F, 0.45F, 2.5F);
+			this.morphPreviewZoom = Mth.clamp(this.morphPreviewZoom + (float)verticalAmount * 0.10F, PREVIEW_MIN_ZOOM, PREVIEW_MAX_ZOOM);
 			return true;
 		}
 
@@ -333,21 +378,27 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 	@Override
 	public void removed() {
 		KohsDeathEffectsClient.getKidsEffectManager().clearPreviewShoulders(KIDS_PREVIEW_ENTITY_ID);
+		this.previewSimulation.clear();
 		this.previewPlayer = null;
 		this.previewMorphEntity = null;
 	}
 
 	private void addMainTabButtons() {
-		int x = this.panelX + 14;
-		int y = this.panelY + 30;
-		int gap = this.panelWidth < 360 ? 5 : 8;
+		int horizontalPadding = this.panelWidth < 360 ? 8 : 12;
+		int x = this.panelX + horizontalPadding;
+		int y = this.panelY + 28;
+		int gap = this.panelWidth < 360 ? 4 : 6;
 		int count = MainTab.values().length;
-		int width = Math.max(1, Math.min(112, (this.panelWidth - 28 - gap * (count - 1)) / count));
+		int width = Math.max(1, Math.min(108, (this.panelWidth - horizontalPadding * 2 - gap * (count - 1)) / count));
 
 		for (MainTab tab : MainTab.values()) {
 			this.addRenderableWidget(this.purpleButton(Component.literal(tab.label), button -> {
 				this.currentTab = tab;
 				this.scrollOffset = 0;
+				if (tab == MainTab.EFFECTS) {
+					this.previewPaused = false;
+					this.restartPreview();
+				}
 				this.rebuildWidgets();
 			}, x, y, width, 20, this.currentTab == tab ? ButtonTone.SELECTED : ButtonTone.NORMAL));
 			x += width + gap;
@@ -355,7 +406,20 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 	}
 
 	private void addEffectSubTabs() {
-		int gap = this.optionsWidth < 360 ? 4 : 8;
+		if (this.sidebarWidth > 0) {
+			int x = this.contentX;
+			int y = this.contentY + 18;
+			int buttonHeight = 20;
+			int gap = 3;
+			for (EffectTab tab : EffectTab.values()) {
+				this.addRenderableWidget(this.purpleButton(Component.literal(tab.label), button -> this.selectEffectTab(tab),
+					x, y, this.sidebarWidth, buttonHeight, this.currentEffectTab == tab ? ButtonTone.SELECTED : ButtonTone.NORMAL));
+				y += buttonHeight + gap;
+			}
+			return;
+		}
+
+		int gap = this.optionsWidth < 360 ? 3 : 6;
 		int count = EffectTab.values().length;
 		int buttonWidth = Math.max(1, Math.min(150, (this.optionsWidth - gap * (count - 1)) / count));
 		int x = this.optionsX;
@@ -372,9 +436,19 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 		this.currentEffectTab = tab;
 		this.activateOnlyEffect(tab, true);
 		this.scrollOffset = 0;
-		this.morphPreviewYawOffset = 0.0F;
-		this.morphPreviewPitchOffset = 0.0F;
-		this.morphPreviewZoom = 1.0F;
+		this.previewPaused = false;
+		this.resetPreviewView();
+		this.restartPreview();
+		this.rebuildWidgets();
+	}
+
+	private void resetDefaults() {
+		this.config = KohsDeathEffectsConfig.resetToDefaults();
+		this.currentEffectTab = EffectTab.SILHOUETTE;
+		this.activateOnlyEffect(this.currentEffectTab, true);
+		this.scrollOffset = 0;
+		this.previewPaused = false;
+		this.resetPreviewView();
 		this.restartPreview();
 		this.rebuildWidgets();
 	}
@@ -393,23 +467,44 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 	}
 
 	private void addPreviewControls() {
-		if (this.previewWidth <= 0 || this.previewHeight < 74) {
+		if (this.previewWidth < 132 || this.previewHeight < 74) {
 			return;
 		}
 
-		if (this.currentEffectTab == EffectTab.KIDS) {
-			return;
-		}
-
-		int buttonWidth = Mth.clamp(this.previewWidth - 20, 64, 92);
+		int availableWidth = this.previewWidth - 20;
+		int gap = 4;
 		int buttonY = this.previewControlY();
-		if (this.currentEffectTab == EffectTab.MORPH) {
-			this.addRenderableWidget(this.purpleButton(Component.literal("Play sound"), button -> this.playPreviewMorphSound(),
-				this.previewX + 10, buttonY, buttonWidth, 20, ButtonTone.SMALL));
-		} else {
-			this.addRenderableWidget(this.purpleButton(Component.literal("Restart"), button -> this.restartPreview(),
-				this.previewX + 10, buttonY, buttonWidth, 20, ButtonTone.SMALL));
+		int firstX = this.previewX + 10;
+		if (this.currentEffectTab == EffectTab.KIDS) {
+			int kidsButtonWidth = Math.max(44, (availableWidth - gap) / 2);
+			this.addRenderableWidget(this.purpleButton(Component.literal(this.previewPaused ? "Play" : "Pause"), button -> {
+				this.togglePreviewPaused();
+				button.setMessage(Component.literal(this.previewPaused ? "Play" : "Pause"));
+			}, firstX, buttonY, kidsButtonWidth, 20, ButtonTone.SMALL));
+			this.addRenderableWidget(this.purpleButton(Component.literal("Center"), button -> this.resetPreviewView(),
+				firstX + kidsButtonWidth + gap, buttonY, kidsButtonWidth, 20, ButtonTone.SMALL));
+			return;
 		}
+
+		int buttonWidth = Math.max(30, (availableWidth - gap * 2) / 3);
+		this.addRenderableWidget(this.purpleButton(Component.literal("Replay"), button -> {
+			this.previewPaused = false;
+			this.restartPreview();
+			this.rebuildWidgets();
+		}, firstX, buttonY, buttonWidth, 20, ButtonTone.SMALL));
+		int secondX = firstX + buttonWidth + gap;
+		if (this.currentEffectTab == EffectTab.MORPH) {
+			this.addRenderableWidget(this.purpleButton(Component.literal("Sound"), button -> this.playPreviewMorphSound(),
+				secondX, buttonY, buttonWidth, 20, ButtonTone.SMALL));
+		} else {
+			this.addRenderableWidget(this.purpleButton(Component.literal(this.previewPaused ? "Play" : "Pause"), button -> {
+				this.togglePreviewPaused();
+				button.setMessage(Component.literal(this.previewPaused ? "Play" : "Pause"));
+			},
+				secondX, buttonY, buttonWidth, 20, ButtonTone.SMALL));
+		}
+		this.addRenderableWidget(this.purpleButton(Component.literal("Center"), button -> this.resetPreviewView(),
+			secondX + buttonWidth + gap, buttonY, buttonWidth, 20, ButtonTone.SMALL));
 	}
 
 	private void playPreviewMorphSound() {
@@ -421,7 +516,7 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 	}
 
 	private void initEffectOptions() {
-		switch (this.currentEffectTab) {
+			switch (this.currentEffectTab) {
 			case SILHOUETTE -> this.initSilhouetteOptions();
 			case PLAYER -> this.initPlayerOptions();
 			case RAGDOLL -> this.initRagdollOptions();
@@ -446,11 +541,13 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 
 		int swatchY = this.scrolledY(fieldY + 44);
 		int swatchX = this.optionsX + CHILD_INDENT;
+		int swatchGap = 2;
+		int swatchSize = Mth.clamp((this.optionsWidth - CHILD_INDENT * 2 - swatchGap * (PRESET_COLORS.length - 1)) / PRESET_COLORS.length, 10, 18);
 		for (int color : PRESET_COLORS) {
-			if (this.isFullyVisible(swatchY, 18)) {
-				this.swatches.add(new Swatch(swatchX, swatchY, 18, color));
+			if (this.isFullyVisible(swatchY, swatchSize)) {
+				this.swatches.add(new Swatch(swatchX, swatchY, swatchSize, color));
 			}
-			swatchX += 24;
+			swatchX += swatchSize + swatchGap;
 		}
 
 		y = fieldY + 86;
@@ -708,7 +805,12 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 	private void addIntSlider(int y, int initialValue, int minimum, int maximum, int step, IntConsumer onValueChanged, IntFunction<String> formatter) {
 		int width = Mth.clamp(this.optionsWidth * 55 / 100, 104, 260);
 		int x = this.optionsX + this.optionsWidth - width;
-		this.addScrolledDrawableChild(new PurpleIntSliderWidget(x, y, width, 20, initialValue, minimum, maximum, step, onValueChanged, formatter));
+		this.addScrolledDrawableChild(new PurpleIntSliderWidget(x, y, width, 20, initialValue, minimum, maximum, step, value -> {
+			onValueChanged.accept(value);
+			if (this.currentTab == MainTab.EFFECTS) {
+				this.restartPreview();
+			}
+		}, formatter));
 	}
 
 	private PurpleButtonWidget purpleButton(Component message, PurplePressAction onPress, int x, int y, int width, int height, ButtonTone tone) {
@@ -716,24 +818,78 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 	}
 
 	private void drawFrame(GuiGraphicsExtractor context) {
-		context.fill(0, 0, this.width, this.height, COLOR_SCREEN_SHADE);
+		this.drawAnimatedParticleBackground(context);
 		context.fill(0, 0, this.width, Math.max(48, this.height / 5), 0x331D0B35);
 		context.fill(this.panelX, this.panelY, this.panelX + this.panelWidth, this.panelY + this.panelHeight, COLOR_PANEL);
-		context.fill(this.panelX + 1, this.panelY + 1, this.panelX + this.panelWidth - 1, this.panelY + 55, COLOR_PANEL_DARK);
+		context.fill(this.panelX + 1, this.panelY + 1, this.panelX + this.panelWidth - 1, this.panelY + this.headerHeight - 1, COLOR_PANEL_DARK);
 		context.outline(this.panelX, this.panelY, this.panelWidth, this.panelHeight, COLOR_BORDER);
-		context.outline(this.panelX + 3, this.panelY + 3, this.panelWidth - 6, this.panelHeight - 6, 0x663D2367);
-		context.text(this.font, this.title, this.panelX + 16, this.panelY + 11, COLOR_TEXT, false);
+		int titleX = this.panelX + (this.panelWidth < 360 ? 10 : 14);
+		context.text(this.font, this.title, titleX, this.panelY + 9, COLOR_TEXT, false);
+		int versionX = titleX + 6 + this.font.width(this.title);
+		context.fill(versionX - 3, this.panelY + 6, versionX + this.font.width("26.1.2") + 3, this.panelY + 19, 0x885E2DA8);
+		context.text(this.font, Component.literal("26.1.2"), versionX, this.panelY + 9, COLOR_TEXT_MUTED, false);
 
-		int tabGap = this.panelWidth < 360 ? 5 : 8;
+		int horizontalPadding = this.panelWidth < 360 ? 8 : 12;
+		int tabGap = this.panelWidth < 360 ? 4 : 6;
 		int tabCount = MainTab.values().length;
-		int tabWidth = Math.max(1, Math.min(112, (this.panelWidth - 28 - tabGap * (tabCount - 1)) / tabCount));
-		int selectedX = this.panelX + 14 + this.currentTab.ordinal() * (tabWidth + tabGap);
-		context.fill(selectedX - 2, this.panelY + 28, selectedX + tabWidth + 2, this.panelY + 52, COLOR_PURPLE_SOFT);
-		context.fill(selectedX, this.panelY + 51, selectedX + tabWidth, this.panelY + 53, COLOR_PURPLE);
-		int tabX = this.panelX + 14;
+		int tabWidth = Math.max(1, Math.min(108, (this.panelWidth - horizontalPadding * 2 - tabGap * (tabCount - 1)) / tabCount));
+		int selectedX = Math.round(this.animatedMainTabX);
+		context.fill(selectedX, this.panelY + 48, selectedX + tabWidth, this.panelY + 50, COLOR_PURPLE);
+		int tabX = this.panelX + horizontalPadding;
 		for (MainTab tab : MainTab.values()) {
-			this.hoverRegions.add(new HoverRegion(tabX, this.panelY + 30, tabWidth, 20, tab.description));
+			this.hoverRegions.add(new HoverRegion(tabX, this.panelY + 28, tabWidth, 20, tab.description));
 			tabX += tabWidth + tabGap;
+		}
+	}
+
+	private void drawAnimatedParticleBackground(GuiGraphicsExtractor context) {
+		long now = Util.getMillis();
+		for (int index = 0; index < BACKGROUND_PARTICLE_COUNT; index++) {
+			int seed = mixParticleSeed(index + 1);
+			int cycleMillis = 3600 + Math.floorMod(seed >>> 8, 4200);
+			long offset = Math.floorMod(seed * 73L, cycleMillis);
+			float progress = ((now + offset) % cycleMillis) / (float)cycleMillis;
+			int travelWidth = Math.max(1, this.width + 32);
+			int x = Math.floorMod(seed, travelWidth) - 16;
+			float sway = Mth.sin(progress * (float)Math.PI * 2.0F + (seed & 31)) * (3.0F + Math.floorMod(seed >>> 13, 9));
+			x += Math.round(sway);
+			int y = this.height + 12 - Math.round(progress * (this.height + 36));
+			int size = 1 + Math.floorMod(seed >>> 18, 3);
+			float pulse = 0.45F + 0.55F * Mth.sin(progress * (float)Math.PI);
+			int alpha = Mth.clamp(Math.round((38 + Math.floorMod(seed >>> 23, 86)) * pulse), 18, 128);
+			int rgb = (index & 3) == 0 ? 0xD8A7FF : (index & 3) == 1 ? 0xB96BFF : 0x7C3CFF;
+			if (size >= 2) {
+				context.fill(x - 1, y - 1, x + size + 1, y + size + 1, ARGB.color(Math.max(8, alpha / 4), rgb));
+			}
+			context.fill(x, y, x + size, y + size, ARGB.color(alpha, rgb));
+		}
+	}
+
+	private static int mixParticleSeed(int value) {
+		value ^= value << 13;
+		value ^= value >>> 17;
+		value ^= value << 5;
+		return value * 0x45D9F3B;
+	}
+
+	private void advanceTabAnimations(float deltaTicks) {
+		int horizontalPadding = this.panelWidth < 360 ? 8 : 12;
+		int mainGap = this.panelWidth < 360 ? 4 : 6;
+		int mainCount = MainTab.values().length;
+		int mainWidth = Math.max(1, Math.min(108, (this.panelWidth - horizontalPadding * 2 - mainGap * (mainCount - 1)) / mainCount));
+		float mainTargetX = this.panelX + horizontalPadding + this.currentTab.ordinal() * (mainWidth + mainGap);
+		float blend = Mth.clamp(deltaTicks * 0.42F, 0.08F, 1.0F);
+		this.animatedMainTabX = Float.isNaN(this.animatedMainTabX) ? mainTargetX : Mth.lerp(blend, this.animatedMainTabX, mainTargetX);
+
+		if (this.sidebarWidth > 0) {
+			float targetY = this.contentY + 18 + this.currentEffectTab.ordinal() * 23.0F;
+			this.animatedEffectTabY = Float.isNaN(this.animatedEffectTabY) ? targetY : Mth.lerp(blend, this.animatedEffectTabY, targetY);
+		} else {
+			int gap = this.optionsWidth < 360 ? 3 : 6;
+			int count = EffectTab.values().length;
+			int width = Math.max(1, Math.min(150, (this.optionsWidth - gap * (count - 1)) / count));
+			float targetX = this.optionsX + this.currentEffectTab.ordinal() * (width + gap);
+			this.animatedEffectTabX = Float.isNaN(this.animatedEffectTabX) ? targetX : Mth.lerp(blend, this.animatedEffectTabX, targetX);
 		}
 	}
 
@@ -751,7 +907,13 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 	}
 
 	private void drawEffectOptions(GuiGraphicsExtractor context) {
-		context.text(this.font, Component.literal("Effects"), this.optionsX, this.contentY, COLOR_TEXT, false);
+		if (this.sidebarWidth > 0) {
+			context.fill(this.contentX - 4, this.contentY - 4, this.contentX + this.sidebarWidth + 4, this.optionsScrollBottom, 0x5510061D);
+			context.text(this.font, Component.literal("EFFECTS"), this.contentX + 4, this.contentY + 4, COLOR_TEXT_DIM, false);
+		}
+		if (this.sidebarWidth > 0) {
+			context.text(this.font, Component.literal(this.currentEffectTab.label + " Settings"), this.optionsX, this.contentY, COLOR_TEXT, false);
+		}
 		this.drawSelectedSubTabUnderline(context);
 		context.enableScissor(this.optionsX - 2, this.optionsScrollTop, this.optionsX + this.optionsWidth + 4, this.optionsScrollBottom);
 
@@ -768,11 +930,22 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 	}
 
 	private void drawSelectedSubTabUnderline(GuiGraphicsExtractor context) {
-		int gap = this.optionsWidth < 360 ? 4 : 8;
+		if (this.sidebarWidth > 0) {
+			int activeY = Math.round(this.animatedEffectTabY);
+			context.fill(this.contentX - 1, activeY, this.contentX + 3, activeY + 20, COLOR_PURPLE);
+			int y = this.contentY + 18;
+			for (EffectTab tab : EffectTab.values()) {
+				this.hoverRegions.add(new HoverRegion(this.contentX, y, this.sidebarWidth, 20, tab.description));
+				y += 23;
+			}
+			return;
+		}
+
+		int gap = this.optionsWidth < 360 ? 3 : 6;
 		int count = EffectTab.values().length;
 		int buttonWidth = Math.max(1, Math.min(150, (this.optionsWidth - gap * (count - 1)) / count));
-		int x = this.optionsX + this.currentEffectTab.ordinal() * (buttonWidth + gap);
-		context.fill(x, this.optionsY + 21, x + buttonWidth, this.optionsY + 24, COLOR_PURPLE);
+		int x = Math.round(this.animatedEffectTabX);
+		context.fill(x, this.optionsY + 20, x + buttonWidth, this.optionsY + 22, COLOR_PURPLE);
 		x = this.optionsX;
 		for (EffectTab tab : EffectTab.values()) {
 			this.hoverRegions.add(new HoverRegion(x, this.optionsY, buttonWidth, 20, tab.description));
@@ -946,13 +1119,25 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 			return;
 		}
 
+		int headerHeight = this.previewHeaderHeight();
 		context.fill(this.previewX, this.previewY, this.previewX + this.previewWidth, this.previewY + this.previewHeight, COLOR_PANEL_SOFT);
-		context.fill(this.previewX + 2, this.previewY + 2, this.previewX + this.previewWidth - 2, this.previewY + 22, 0xAA2B1249);
+		context.fill(this.previewX + 1, this.previewY + 1, this.previewX + this.previewWidth - 1, this.previewY + headerHeight, 0xAA2B1249);
 		context.outline(this.previewX, this.previewY, this.previewWidth, this.previewHeight, COLOR_BORDER);
-		context.text(this.font, Component.literal("Preview"), this.previewX + 8, this.previewY + 8, COLOR_TEXT, false);
+		context.text(this.font, Component.literal("Live Preview — " + this.currentEffectTab.label), this.previewX + 8, this.previewY + 6, COLOR_TEXT, false);
+		if (headerHeight >= 34) {
+			String state = this.previewStateText();
+			context.text(
+				this.font,
+				Component.literal(this.font.plainSubstrByWidth(state, Math.max(30, this.previewWidth - 16))),
+				this.previewX + 8,
+				this.previewY + 19,
+				COLOR_TEXT_MUTED,
+				false
+			);
+		}
 
 		int innerLeft = this.previewX + 8;
-		int innerTop = this.previewY + 24;
+		int innerTop = this.previewY + headerHeight + 2;
 		int innerRight = this.previewX + this.previewWidth - 8;
 		int innerBottom = this.previewY + this.previewHeight - this.previewFooterSpace();
 		if (innerBottom <= innerTop + 12) {
@@ -960,6 +1145,7 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 		}
 
 		context.enableScissor(innerLeft, innerTop, innerRight, innerBottom);
+		this.drawPreviewWorldBackground(context, innerLeft, innerTop, innerRight, innerBottom);
 		if (this.currentEffectTab != EffectTab.KIDS) {
 			KohsDeathEffectsClient.getKidsEffectManager().clearPreviewShoulders(KIDS_PREVIEW_ENTITY_ID);
 		}
@@ -968,7 +1154,8 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 		}
 		context.fill(innerLeft, innerBottom - 1, innerRight, innerBottom, 0x66B96BFF);
 
-		float progress = this.previewProgress();
+		this.updatePreviewSimulation();
+		float progress = this.previewFrame == null ? this.previewProgress() : this.previewFrame.progress();
 		switch (this.currentEffectTab) {
 			case SILHOUETTE -> this.drawSilhouettePreview(context, innerLeft, innerTop, innerRight, innerBottom, progress);
 			case PLAYER -> this.drawPlayerPreview(context, innerLeft, innerTop, innerRight, innerBottom, progress);
@@ -976,41 +1163,80 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 			case KIDS -> this.drawKidsPreview(context, innerLeft, innerTop, innerRight, innerBottom, progress);
 			case MORPH -> this.drawMorphPreview(context, innerLeft, innerTop, innerRight, innerBottom, progress);
 		}
-
 		context.disableScissor();
 		this.drawPreviewHelp(context);
 	}
 
-	private int previewFooterSpace() {
-		if (this.currentEffectTab == EffectTab.KIDS) {
-			return this.previewHeight >= 112 ? 24 : 8;
+	private int previewHeaderHeight() {
+		return this.previewHeight >= 148 && this.previewWidth >= 170 ? 34 : 22;
+	}
+
+	private void drawPreviewWorldBackground(GuiGraphicsExtractor context, int left, int top, int right, int bottom) {
+		int width = Math.max(1, right - left);
+		int height = Math.max(1, bottom - top);
+		float viewportAspect = width / (float)height;
+		float imageAspect = PREVIEW_WORLD_IMAGE_WIDTH / (float)PREVIEW_WORLD_IMAGE_HEIGHT;
+		float u0 = 0.0F;
+		float u1 = 1.0F;
+		float v0 = 0.0F;
+		float v1 = 1.0F;
+		if (viewportAspect < imageAspect) {
+			float visibleWidth = viewportAspect / imageAspect;
+			u0 = (1.0F - visibleWidth) * 0.5F;
+			u1 = u0 + visibleWidth;
+		} else {
+			float visibleHeight = imageAspect / viewportAspect;
+			v0 = (1.0F - visibleHeight) * 0.5F;
+			v1 = v0 + visibleHeight;
 		}
 
-		return this.previewHeight >= 112 ? 52 : this.previewHeight >= 74 ? 32 : 8;
+		context.blit(PREVIEW_WORLD_TEXTURE_ID, left, top, right, bottom, u0, u1, v0, v1);
+		context.fill(left, top, right, bottom, 0x220B0614);
+	}
+
+	private String previewStateText() {
+		return switch (this.currentEffectTab) {
+			case SILHOUETTE -> String.format(Locale.ROOT, "Kill > Silhouette | %d%% | %.1fx", Math.round(this.config.silhouetteAlpha * 100.0F), this.config.silhouetteScale);
+			case PLAYER -> "Kill > Ghost | " + movementText(this.config.playerGhostMovement).getString() + " | Armor " + (this.config.playerGhostArmorEnabled ? "on" : "off");
+			case RAGDOLL -> "Kill > Faint | " + this.faintAnimationLabel() + (this.config.faintAnimationType == KohsDeathEffectsConfig.FaintAnimationType.CRAWL ? " " + this.config.faintCrawlSpeed + "%" : "");
+			case KIDS -> this.config.kidsMode == KohsDeathEffectsConfig.KidsMode.CUMULATIVE
+				? "Kill > Train | Rope " + this.config.kidsRopeSizePercent + "%"
+				: "Kill > Shoulders | " + kidsTimerText(this.config.kidsTimerSeconds);
+			case MORPH -> "Kill > Morph | " + MorphMobCatalog.selectedName(this.config.morphEntityTypeId).getString();
+		};
+	}
+
+	private int previewFooterSpace() {
+		return this.previewHeight >= 148 ? 52 : this.previewHeight >= 74 ? 30 : 8;
 	}
 
 	private int previewControlY() {
-		return this.previewY + this.previewHeight - (this.previewHeight >= 112 ? 42 : 26);
+		return this.previewY + this.previewHeight - (this.previewHeight >= 148 ? 42 : 24);
 	}
 
 	private void drawPreviewHelp(GuiGraphicsExtractor context) {
-		if (this.previewWidth <= 0 || this.previewHeight < 112) {
+		if (this.previewWidth <= 0 || this.previewHeight < 148) {
 			return;
 		}
 
-		String text = this.currentEffectTab == EffectTab.MORPH
-			? "Enable Mob sound to hear this"
-			: this.currentEffectTab == EffectTab.KIDS
-				? "This shows the shoulder and train modes"
-				: this.previewCanOrbit() ? "Left click: rotate  Wheel: zoom" : "Restart refreshes preview";
+		String text = this.currentEffectTab == EffectTab.KIDS
+			? this.config.kidsMode == KohsDeathEffectsConfig.KidsMode.CUMULATIVE
+				? "Shoulders + defeated-player train | Drag / wheel"
+				: "Two dolls sit on the shoulders | Drag / wheel"
+			: this.previewCanOrbit() ? "Drag: rotate | Wheel: zoom" : "Preview follows the selected effect";
+		int helpWidth = Math.max(40, this.previewWidth - 16 - (this.previewCanOrbit() ? 34 : 0));
 		context.text(
 			this.font,
-			Component.literal(this.font.plainSubstrByWidth(text, Math.max(40, this.previewWidth - 16))),
+			Component.literal(this.font.plainSubstrByWidth(text, helpWidth)),
 			this.previewX + 8,
 			this.previewControlY() + 24,
 			COLOR_TEXT_DIM,
 			false
 		);
+		if (this.previewCanOrbit()) {
+			String zoom = Math.round(this.morphPreviewZoom * 100.0F) + "%";
+			context.text(this.font, Component.literal(zoom), this.previewX + this.previewWidth - 8 - this.font.width(zoom), this.previewControlY() + 24, COLOR_TEXT_MUTED, false);
+		}
 	}
 
 	private void drawGifPlaceholder(GuiGraphicsExtractor context, int left, int top, int right, int bottom, String label) {
@@ -1027,38 +1253,32 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 	}
 
 	private void drawSilhouettePreview(GuiGraphicsExtractor context, int left, int top, int right, int bottom, float progress) {
-		float previewVisibility = 0.18F + silhouetteFade(progress) * 0.82F;
-		float fade = this.config.risingSilhouetteEnabled ? previewVisibility * this.config.silhouetteAlpha : 0.18F;
+		float previewVisibility = this.previewFrame == null ? 0.18F + silhouetteFade(progress) * 0.82F : this.previewFrame.alpha();
+		float fade = this.config.risingSilhouetteEnabled ? previewVisibility : 0.18F;
 		int alpha = Mth.clamp((int)(fade * 255.0F), 0, 255);
 		int width = right - left;
 		int height = bottom - top;
-		float rise = this.config.risingSilhouetteEnabled ? easeOutCubic(progress) : 0.0F;
-		int lift = (int)(rise * Math.max(8, height - 68));
-		int previewTop = top - lift;
-		int previewBottom = bottom - lift;
-		float baseScale = Mth.clamp(Math.min(width, height) / 2.0F, 28.0F, 62.0F);
-		float scale = Mth.clamp(baseScale * this.config.silhouetteScale * this.morphPreviewZoom, 18.0F, 128.0F);
+		float baseScale = Mth.clamp(Math.min(width, height) * 0.94F / 2.125F, 24.0F, 96.0F);
+		float scale = Mth.clamp(baseScale * this.config.silhouetteScale * this.morphPreviewZoom, 18.0F, 150.0F);
 
-		this.drawSilhouetteModel(context, left, previewTop, right, previewBottom, scale, alpha);
-		int coverAlpha = 255 - alpha;
-		if (coverAlpha > 0) {
-			context.fill(left, top, right, bottom, ARGB.color(coverAlpha, 0x0B1014));
-		}
+		this.drawSilhouetteModel(context, left, top, right, bottom, scale, alpha);
 	}
 
 	private void drawPlayerPreview(GuiGraphicsExtractor context, int left, int top, int right, int bottom, float progress) {
-		boolean rising = this.config.playerGhostMovement == KohsDeathEffectsConfig.GhostMovementMode.RISING;
-		float rise = this.config.playerGhostEnabled && rising ? easeOutCubic(progress) : 0.0F;
 		int width = right - left;
 		int height = bottom - top;
-		int lift = (int)(rise * Math.max(10, height - 68));
-		int previewTop = top;
-		int previewBottom = bottom;
 		int size = Mth.clamp((int)(Math.min(width, height) * 0.5F * this.morphPreviewZoom), 18, 96);
 		PreviewPlayerEntity entity = this.getPreviewPlayer();
 
 		if (entity == null) {
-			this.drawSilhouetteModel(context, left, previewTop, right, previewBottom, size, 255);
+			this.drawSilhouetteModel(context, left, top, right, bottom, size, 255);
+			return;
+		}
+
+		float fade = this.config.playerGhostEnabled
+			? this.previewFrame == null ? (1.0F - progress) * this.config.playerGhostAlpha : this.previewFrame.alpha()
+			: 0.24F;
+		if (fade <= 0.035F) {
 			return;
 		}
 
@@ -1066,71 +1286,68 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 		InventoryScreen.extractEntityInInventoryFollowsMouse(
 			context,
 			left,
-			previewTop,
+			top,
 			right,
-			previewBottom,
+			bottom,
 			size,
 			0.0625F,
 			(left + right) / 2.0F + this.morphPreviewYawOffset,
-			(previewTop + previewBottom) / 2.0F + this.morphPreviewPitchOffset,
+			(top + bottom) / 2.0F + this.morphPreviewPitchOffset,
 			entity
 		);
-		float fade = this.config.playerGhostEnabled ? (1.0F - progress) * this.config.playerGhostAlpha : 0.24F;
-		int coverAlpha = Mth.clamp((int)((1.0F - fade) * 190.0F), 0, 210);
-		context.fill(left, previewTop, right, previewBottom, ARGB.color(coverAlpha, 0x0B1014));
 	}
 
 	private void drawRagdollPreview(GuiGraphicsExtractor context, int left, int top, int right, int bottom, float progress) {
 		PlayerModel model = this.getRagdollPreviewModel();
 		AvatarRenderState state = this.createRagdollPreviewState();
 		PlayerSkin skin = this.currentPreviewSkin();
-		float elapsedTicks = progress * 120.0F;
-		float fall = Mth.clamp(elapsedTicks / 26.0F, 0.0F, 1.0F);
-		float settle = Mth.clamp((elapsedTicks - 26.0F) / 16.0F, 0.0F, 1.0F);
-		float crawlAmount = this.config.faintAnimationType == KohsDeathEffectsConfig.FaintAnimationType.CRAWL
-			? smoothStep(Mth.clamp((elapsedTicks - 54.0F) / 18.0F, 0.0F, 1.0F))
-			: 0.0F;
-		float crawlCycle = crawlAmount > 0.0F && progress < 0.82F
-			? Mth.sin(elapsedTicks * (0.34F + this.config.faintCrawlSpeed / 260.0F))
-			: 0.0F;
+		float elapsedTicks = this.previewFrame == null ? progress * 120.0F : this.previewFrame.elapsedTicks();
+		float fall = this.previewFrame == null ? Mth.clamp(elapsedTicks / 26.0F, 0.0F, 1.0F) : this.previewFrame.faintFall();
+		float settle = this.previewFrame == null ? Mth.clamp((elapsedTicks - 26.0F) / 16.0F, 0.0F, 1.0F) : this.previewFrame.faintSettle();
+		float crawlAmount = this.previewFrame == null
+			? this.config.faintAnimationType == KohsDeathEffectsConfig.FaintAnimationType.CRAWL
+				? smoothStep(Mth.clamp((elapsedTicks - 54.0F) / 18.0F, 0.0F, 1.0F))
+				: 0.0F
+			: this.previewFrame.faintCrawlAmount();
+		float crawlCycle = this.previewFrame == null
+			? crawlAmount > 0.0F && progress < 0.82F
+				? Mth.sin(elapsedTicks * (0.34F + this.config.faintCrawlSpeed / 260.0F))
+				: 0.0F
+			: this.previewFrame.faintCrawlCycle();
 		model.setupAnim(state);
 		applyFaintPreviewPose(model, fall, settle, crawlCycle, crawlAmount);
+		orientFaintPreviewHorizontally(model);
 		showAllPlayerModelParts(model);
 
 		int width = right - left;
 		int height = bottom - top;
-		int cameraInsetX = Math.max(2, width / 10);
-		int cameraInsetY = Math.max(2, height / 8);
+		int cameraInsetX = Math.max(2, width / 18);
+		int cameraInsetY = Math.max(2, height / 18);
 		int cameraLeft = left + cameraInsetX;
 		int cameraTop = top + cameraInsetY;
 		int cameraRight = right - cameraInsetX;
 		int cameraBottom = bottom - cameraInsetY;
-		float scale = Mth.clamp(
-			Math.min((cameraRight - cameraLeft) / 1.75F, (cameraBottom - cameraTop) / 0.95F) * this.morphPreviewZoom,
-			22.0F,
-			128.0F
-		);
-		float crawlTurn = -crawlAmount * 42.0F;
-		int coverAlpha = progress > 0.82F ? Mth.clamp((int)((progress - 0.82F) / 0.18F * 190.0F), 0, 190) : 0;
-		context.skin(
+		float horizontalFit = (cameraRight - cameraLeft) * 0.92F / 1.72F;
+		float verticalFit = (cameraBottom - cameraTop) * 0.82F / 0.92F;
+		float scale = Mth.clamp(Math.min(horizontalFit, verticalFit) * this.morphPreviewZoom, 22.0F, 124.0F);
+		float previewAlpha = this.previewFrame == null ? 1.0F : this.previewFrame.alpha();
+		if (previewAlpha <= 0.035F) {
+			return;
+		}
+		this.drawTorsoCenteredSkin(
+			context,
 			model,
 			skin.body().texturePath(),
 			scale,
-			Mth.lerp(easeOutCubic(fall), 10.0F, this.config.faintAnimationType == KohsDeathEffectsConfig.FaintAnimationType.CRAWL ? Mth.lerp(crawlAmount, 90.0F, -90.0F) : 90.0F) + Mth.clamp(this.morphPreviewPitchOffset, -18.0F, 18.0F),
-			205.0F + crawlTurn + Mth.clamp(this.morphPreviewYawOffset, -45.0F, 45.0F),
-			0.92F,
-			cameraLeft,
-			cameraTop,
-			cameraRight,
-			cameraBottom
+			5.0F + Mth.clamp(this.morphPreviewPitchOffset, -16.0F, 16.0F),
+			30.0F + Mth.clamp(this.morphPreviewYawOffset, -38.0F, 38.0F),
+			(cameraLeft + cameraRight) / 2,
+			(cameraTop + cameraBottom) / 2
 		);
-		if (coverAlpha > 0) {
-			context.fill(left, top, right, bottom, ARGB.color(coverAlpha, 0x0B1014));
-		}
 	}
 
 	private void drawKidsPreview(GuiGraphicsExtractor context, int left, int top, int right, int bottom, float progress) {
-		this.drawKidsPreviewImage(context, left, top, right, bottom);
+		this.drawKidsPreviewLegacy(context, left, top, right, bottom, progress);
 	}
 
 	private void drawKidsPreviewImage(GuiGraphicsExtractor context, int left, int top, int right, int bottom) {
@@ -1145,79 +1362,149 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 	}
 
 	private void drawKidsPreviewLegacy(GuiGraphicsExtractor context, int left, int top, int right, int bottom, float progress) {
-		PreviewPlayerEntity carrier = this.getPreviewPlayer();
-		if (carrier == null) {
-			this.drawGifPlaceholder(context, left, top, right, bottom, "Kids");
-			return;
-		}
-
-		this.preparePreviewPlayer(carrier);
 		int width = right - left;
 		int height = bottom - top;
 		boolean cumulative = this.config.kidsMode == KohsDeathEffectsConfig.KidsMode.CUMULATIVE;
 		int carrierLeft = left;
-		int carrierRight = cumulative ? left + Math.max(40, Math.round(width * 0.60F)) : right;
+		int carrierRight = cumulative ? left + Math.max(44, Math.round(width * 0.52F)) : right;
 		carrierRight = Math.min(right, carrierRight);
 		int centerX = (carrierLeft + carrierRight) / 2;
-		float carrierFactor = cumulative ? 0.37F : 0.43F;
-		int carrierSize = Mth.clamp((int)(Math.min(width, height) * carrierFactor * this.morphPreviewZoom), 16, 70);
-		float wave = this.config.kidsAnimationEnabled ? Mth.sin(progress * (float)Math.PI * 8.0F) : 0.0F;
-		KohsDeathEffectsClient.getKidsEffectManager().setPreviewShoulders(KIDS_PREVIEW_ENTITY_ID, this.currentPreviewSkin(), wave);
-
-		float ropeSizeMultiplier = Mth.clamp(this.config.kidsRopeSizePercent / 100.0F, 1.0F, 3.0F);
-		boolean showTrain = cumulative && width >= 64 && height >= 30;
-		int draggedLeft = Math.max(left, left + Math.round(width * 0.48F));
-		int draggedCenterX = (draggedLeft + right) / 2;
-		int draggedCenterY = bottom - Mth.clamp(Math.round(height * 0.18F), 6, 16);
-		if (showTrain) {
-			int ropeAnchorX = centerX + Mth.clamp(Math.round(carrierSize * 0.24F), 3, 12);
-			int ropeAnchorY = bottom - Mth.clamp(Math.round(carrierSize * 0.38F), 6, 18);
-			int ropeThickness = Mth.clamp(Math.round(ropeSizeMultiplier), 1, 3);
-			drawPreviewRope(context, ropeAnchorX, ropeAnchorY, draggedCenterX, draggedCenterY, ropeThickness);
-		}
-
-		InventoryScreen.extractEntityInInventoryFollowsMouse(
-			context,
-			carrierLeft,
-			top,
-			carrierRight,
-			bottom,
-			carrierSize,
-			0.0625F,
-			centerX + this.morphPreviewYawOffset,
-			(top + bottom) / 2.0F + this.morphPreviewPitchOffset,
-			carrier
+		int centerY = (top + bottom) / 2;
+		float carrierScale = Mth.clamp(
+			Math.min(carrierRight - carrierLeft, height) * 0.88F / 2.125F * this.morphPreviewZoom,
+			20.0F,
+			cumulative ? 78.0F : 96.0F
 		);
+		float elapsedTicks = this.previewFrame == null ? progress * 120.0F : this.previewFrame.elapsedTicks();
+		KidsEffectManager kidsEffectManager = KohsDeathEffectsClient.getKidsEffectManager();
+		KidsEffectManager.KidsPreviewFrame kidsFrame = kidsEffectManager.previewFrame(this.config, elapsedTicks);
+		PlayerSkin skin = this.currentPreviewSkin();
+
+		boolean showTrain = cumulative && width >= 64 && height >= 30;
+		int trainStartX = Mth.clamp(centerX + Math.round(carrierScale * 0.26F), left + 4, right - 4);
+		int trainEndX = right - Mth.clamp(Math.round(width * 0.08F), 5, 14);
+		int trainBaseY = top + Math.round(height * 0.68F);
+		int previousRopeX = trainStartX;
+		int previousRopeY = Mth.clamp(centerY + Math.round(carrierScale * 0.23F), top + 4, bottom - 4);
+		if (showTrain) {
+			float maximumDistance = kidsFrame.draggedDolls().get(kidsFrame.draggedDolls().size() - 1).distance();
+			int ropeThickness = Mth.clamp(Math.round(kidsFrame.ropeSizeMultiplier()), 1, 3);
+			for (KidsEffectManager.DraggedDollPreview doll : kidsFrame.draggedDolls()) {
+				float distanceProgress = maximumDistance <= 0.0F ? 0.0F : doll.distance() / maximumDistance;
+				int dollX = Math.round(Mth.lerp(distanceProgress, trainStartX, trainEndX));
+				int dollY = Mth.clamp(trainBaseY + Math.round(doll.sway() * height * 0.18F), top + 4, bottom - 4);
+				drawPreviewRope(context, previousRopeX, previousRopeY, dollX, dollY, ropeThickness);
+				previousRopeX = dollX;
+				previousRopeY = dollY;
+			}
+		}
+
+		PreviewPlayerEntity previewCarrier = this.getPreviewPlayer();
+		if (previewCarrier != null) {
+			this.preparePreviewPlayer(previewCarrier);
+			kidsEffectManager.setPreviewShoulders(KIDS_PREVIEW_ENTITY_ID, skin, elapsedTicks, this.config.kidsAnimationEnabled);
+			InventoryScreen.extractEntityInInventoryFollowsMouse(
+				context,
+				carrierLeft,
+				top,
+				carrierRight,
+				bottom,
+				Math.round(carrierScale),
+				0.0625F,
+				centerX + this.morphPreviewYawOffset,
+				centerY + this.morphPreviewPitchOffset,
+				previewCarrier
+			);
+		} else {
+			kidsEffectManager.clearPreviewShoulders(KIDS_PREVIEW_ENTITY_ID);
+			this.drawFallbackKidsCarrier(context, skin, kidsFrame, carrierScale, centerX, centerY);
+		}
 
 		if (showTrain) {
-			PlayerModel draggedModel = this.getKidsDraggedPreviewModel();
-			AvatarRenderState draggedState = this.createRagdollPreviewState();
-			draggedModel.setupAnim(draggedState);
-			float frantic = this.config.kidsAnimationEnabled && this.config.kidsDraggedHandMovementEnabled
-				? Mth.sin(progress * (float)Math.PI * 12.0F)
-				: 0.0F;
-			applyKidsDraggedPose(draggedModel, frantic);
-			applyKidsDraggedPreviewOrientation(draggedModel);
-			showAllPlayerModelParts(draggedModel);
-			float facingYaw = this.config.kidsTrainFacing == KohsDeathEffectsConfig.KidsTrainFacing.LOOK_UP ? 180.0F : 0.0F;
+			float maximumDistance = kidsFrame.draggedDolls().get(kidsFrame.draggedDolls().size() - 1).distance();
 			float draggedScale = Mth.clamp(
-				Math.min(right - draggedLeft, height) * 0.22F * ropeSizeMultiplier,
-				8.0F,
-				Math.max(9.0F, Math.min(24.0F, height * 0.32F))
+				Math.min(width, height) * 0.095F * kidsFrame.ropeSizeMultiplier() * this.morphPreviewZoom,
+				7.0F,
+				Math.max(9.0F, Math.min(27.0F, height * 0.34F))
 			);
-			context.skin(
-				draggedModel,
-				this.currentPreviewSkin().body().texturePath(),
-				draggedScale,
-				6.0F,
-				facingYaw,
-				0.96F,
-				draggedLeft,
-				top,
-				right,
-				bottom
-			);
+			for (int index = 0; index < kidsFrame.draggedDolls().size(); index++) {
+				KidsEffectManager.DraggedDollPreview doll = kidsFrame.draggedDolls().get(index);
+				PlayerModel draggedModel = this.getKidsDraggedPreviewModel(index);
+				AvatarRenderState draggedState = this.createRagdollPreviewState();
+				draggedModel.setupAnim(draggedState);
+				KidsEffectManager.applyPreviewDraggedPose(draggedModel, doll.handWave());
+				float distanceProgress = maximumDistance <= 0.0F ? 0.0F : doll.distance() / maximumDistance;
+				int dollX = Math.round(Mth.lerp(distanceProgress, trainStartX, trainEndX));
+				int dollY = Mth.clamp(trainBaseY + Math.round(doll.sway() * height * 0.18F), top + 4, bottom - 4);
+				this.drawTorsoCenteredSkin(
+					context,
+					draggedModel,
+					skin.body().texturePath(),
+					draggedScale,
+					kidsFrame.bodyPitch() + Mth.clamp(this.morphPreviewPitchOffset, -14.0F, 14.0F),
+					205.0F + Mth.clamp(this.morphPreviewYawOffset, -70.0F, 70.0F),
+					dollX,
+					dollY
+				);
+			}
 		}
+	}
+
+	private void drawFallbackKidsCarrier(
+		GuiGraphicsExtractor context,
+		PlayerSkin skin,
+		KidsEffectManager.KidsPreviewFrame kidsFrame,
+		float carrierScale,
+		int centerX,
+		int centerY
+	) {
+		float cameraPitch = Mth.clamp(this.morphPreviewPitchOffset, -25.0F, 25.0F);
+		float cameraYaw = 30.0F + Mth.clamp(this.morphPreviewYawOffset, -70.0F, 70.0F);
+		float shoulderScale = Mth.clamp(carrierScale * 0.22F, 7.0F, 22.0F);
+		float yawRadians = cameraYaw * ((float)Math.PI / 180.0F);
+		int shoulderOffsetX = Math.round(carrierScale * 0.34F * Math.max(0.30F, Math.abs(Mth.cos(yawRadians))));
+		int shoulderY = centerY - Math.round(carrierScale * 0.43F);
+		int farShoulder = Mth.sin(yawRadians) >= 0.0F ? 1 : 0;
+		int nearShoulder = 1 - farShoulder;
+
+		this.drawFallbackShoulderDoll(context, skin, kidsFrame, shoulderScale, cameraPitch, cameraYaw, centerX, shoulderY, shoulderOffsetX, farShoulder);
+
+		PlayerModel carrierModel = this.getKidsCarrierPreviewModel();
+		AvatarRenderState carrierState = this.createRagdollPreviewState();
+		carrierModel.setupAnim(carrierState);
+		showAllPlayerModelParts(carrierModel);
+		this.drawTorsoCenteredSkin(context, carrierModel, skin.body().texturePath(), carrierScale, cameraPitch, cameraYaw, centerX, centerY);
+
+		this.drawFallbackShoulderDoll(context, skin, kidsFrame, shoulderScale, cameraPitch, cameraYaw, centerX, shoulderY, shoulderOffsetX, nearShoulder);
+	}
+
+	private void drawFallbackShoulderDoll(
+		GuiGraphicsExtractor context,
+		PlayerSkin skin,
+		KidsEffectManager.KidsPreviewFrame kidsFrame,
+		float shoulderScale,
+		float cameraPitch,
+		float cameraYaw,
+		int centerX,
+		int shoulderY,
+		int shoulderOffsetX,
+		int index
+	) {
+		PlayerModel shoulderModel = this.getKidsShoulderPreviewModel(index);
+		AvatarRenderState shoulderState = this.createRagdollPreviewState();
+		shoulderModel.setupAnim(shoulderState);
+		KidsEffectManager.applyPreviewShoulderPose(shoulderModel, kidsFrame.shoulderWaves().get(index));
+		int side = index == 0 ? 1 : -1;
+		this.drawTorsoCenteredSkin(
+			context,
+			shoulderModel,
+			skin.body().texturePath(),
+			shoulderScale,
+			cameraPitch,
+			cameraYaw,
+			centerX + side * shoulderOffsetX,
+			shoulderY
+		);
 	}
 
 	private static void drawPreviewRope(GuiGraphicsExtractor context, int fromX, int fromY, int toX, int toY, int thickness) {
@@ -1242,14 +1529,12 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 			return;
 		}
 
-		float fade = morphFade(progress) * this.config.morphAlpha;
-		int coverAlpha = Mth.clamp((int)((1.0F - fade) * 190.0F), 0, 210);
+		float fade = this.previewFrame == null ? morphFade(progress) * this.config.morphAlpha : this.previewFrame.alpha();
+		if (fade <= 0.035F) {
+			return;
+		}
 		int width = right - left;
 		int height = bottom - top;
-		float rise = this.config.morphElevationEnabled ? easeOutCubic(progress) : 0.0F;
-		int lift = (int)(rise * Math.max(8, height - 64));
-		int previewTop = top;
-		int previewBottom = bottom;
 		float largestSide = Math.max(0.75F, Math.max(entity.getBbWidth(), entity.getBbHeight()));
 		int size = Mth.clamp((int)(Math.min(width, height) * 0.82F * this.morphPreviewZoom / largestSide), 8, 92);
 
@@ -1257,16 +1542,15 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 		InventoryScreen.extractEntityInInventoryFollowsMouse(
 			context,
 			left,
-			previewTop,
+			top,
 			right,
-			previewBottom,
+			bottom,
 			size,
 			0.0625F,
 			(left + right) / 2.0F + this.morphPreviewYawOffset,
-			(previewTop + previewBottom) / 2.0F + this.morphPreviewPitchOffset,
+			(top + bottom) / 2.0F + this.morphPreviewPitchOffset,
 			entity
 		);
-		context.fill(left, previewTop, right, previewBottom, ARGB.color(coverAlpha, 0x0B1014));
 	}
 
 	private void drawSilhouetteModel(GuiGraphicsExtractor context, int left, int top, int right, int bottom, float scale, int alpha) {
@@ -1276,30 +1560,44 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 		showAllPlayerModelParts(model);
 		float pitch = Mth.clamp(this.morphPreviewPitchOffset, -35.0F, 35.0F);
 		float yaw = 180.0F + this.morphPreviewYawOffset;
-		context.skin(
-			model,
-			this.currentPreviewSkin().body().texturePath(),
-			scale,
-			pitch,
-			yaw,
-			1.6F,
-			left,
-			top,
-			right,
-			bottom
-		);
-		int tintAlpha = Mth.clamp((int)(alpha * 0.68F), 0, 190);
-		context.skin(
+		int tintAlpha = Mth.clamp(alpha, 0, 255);
+		this.drawTorsoCenteredSkin(
+			context,
 			model,
 			getSilhouettePreviewTexture(ARGB.color(tintAlpha, this.config.silhouetteColor)),
 			scale,
 			pitch,
 			yaw,
-			1.6F,
-			left,
-			top,
-			right,
-			bottom
+			(left + right) / 2,
+			(top + bottom) / 2
+		);
+	}
+
+	private void drawTorsoCenteredSkin(
+		GuiGraphicsExtractor context,
+		PlayerModel model,
+		Identifier texture,
+		float scale,
+		float rotationX,
+		float rotationY,
+		int torsoX,
+		int torsoY
+	) {
+		int renderHeight = Math.max(24, Math.round(scale * 2.125F / 0.97F));
+		int renderWidth = Math.max(renderHeight, Math.round(scale * 2.30F));
+		int renderLeft = torsoX - renderWidth / 2;
+		int renderTop = torsoY - renderHeight / 2;
+		context.skin(
+			model,
+			texture,
+			scale,
+			rotationX,
+			rotationY,
+			PREVIEW_TORSO_PIVOT_Y,
+			renderLeft,
+			renderTop,
+			renderLeft + renderWidth,
+			renderTop + renderHeight
 		);
 	}
 
@@ -1387,17 +1685,51 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 		return this.ragdollPreviewModel;
 	}
 
-	private PlayerModel getKidsDraggedPreviewModel() {
+	private PlayerModel getKidsCarrierPreviewModel() {
 		boolean slim = this.currentPreviewSkin().model() == PlayerModelType.SLIM;
-		if (this.kidsDraggedPreviewModel == null || this.kidsDraggedPreviewModelSlim != slim) {
-			this.kidsDraggedPreviewModel = new PlayerModel(
+		if (this.kidsCarrierPreviewModel == null || this.kidsCarrierPreviewModelSlim != slim) {
+			this.kidsCarrierPreviewModel = new PlayerModel(
 				Minecraft.getInstance().getEntityModels().bakeLayer(ModelLayers.PLAYER),
 				slim
 			);
-			this.kidsDraggedPreviewModelSlim = slim;
+			this.kidsCarrierPreviewModelSlim = slim;
 		}
 
-		return this.kidsDraggedPreviewModel;
+		return this.kidsCarrierPreviewModel;
+	}
+
+	private PlayerModel getKidsShoulderPreviewModel(int index) {
+		boolean slim = this.currentPreviewSkin().model() == PlayerModelType.SLIM;
+		int safeIndex = Mth.clamp(index, 0, this.kidsShoulderPreviewModels.length - 1);
+		if (this.kidsShoulderPreviewModelSlim != slim) {
+			java.util.Arrays.fill(this.kidsShoulderPreviewModels, null);
+			this.kidsShoulderPreviewModelSlim = slim;
+		}
+		if (this.kidsShoulderPreviewModels[safeIndex] == null) {
+			this.kidsShoulderPreviewModels[safeIndex] = new PlayerModel(
+				Minecraft.getInstance().getEntityModels().bakeLayer(ModelLayers.PLAYER),
+				slim
+			);
+		}
+
+		return this.kidsShoulderPreviewModels[safeIndex];
+	}
+
+	private PlayerModel getKidsDraggedPreviewModel(int index) {
+		boolean slim = this.currentPreviewSkin().model() == PlayerModelType.SLIM;
+		int safeIndex = Mth.clamp(index, 0, this.kidsDraggedPreviewModels.length - 1);
+		if (this.kidsDraggedPreviewModelSlim != slim) {
+			java.util.Arrays.fill(this.kidsDraggedPreviewModels, null);
+			this.kidsDraggedPreviewModelSlim = slim;
+		}
+		if (this.kidsDraggedPreviewModels[safeIndex] == null) {
+			this.kidsDraggedPreviewModels[safeIndex] = new PlayerModel(
+				Minecraft.getInstance().getEntityModels().bakeLayer(ModelLayers.PLAYER),
+				slim
+			);
+		}
+
+		return this.kidsDraggedPreviewModels[safeIndex];
 	}
 
 	private PlayerSkin currentPreviewSkin() {
@@ -1447,44 +1779,31 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 		resetPlayerOverlayTransforms(model);
 	}
 
-	private static void applyKidsDraggedPose(PlayerModel model, float frantic) {
-		model.head.xRot = -0.16F;
-		model.head.yRot = frantic * 0.08F;
-		model.body.xRot = 0.06F;
-		model.rightArm.xRot = -0.82F + frantic * 0.62F;
-		model.rightArm.yRot = -0.32F;
-		model.rightArm.zRot = 0.24F;
-		model.leftArm.xRot = -0.82F - frantic * 0.62F;
-		model.leftArm.yRot = 0.32F;
-		model.leftArm.zRot = -0.24F;
-		model.rightLeg.xRot = 0.22F;
-		model.rightLeg.yRot = 0.12F;
-		model.leftLeg.xRot = -0.12F;
-		model.leftLeg.yRot = -0.12F;
+	private static void orientFaintPreviewHorizontally(PlayerModel model) {
+		float angle = -(float)Math.PI / 2.0F;
+		rotatePreviewPartAroundZ(model.head, 0.0F, 12.0F, angle);
+		rotatePreviewPartAroundZ(model.body, 0.0F, 12.0F, angle);
+		rotatePreviewPartAroundZ(model.rightArm, 0.0F, 12.0F, angle);
+		rotatePreviewPartAroundZ(model.leftArm, 0.0F, 12.0F, angle);
+		rotatePreviewPartAroundZ(model.rightLeg, 0.0F, 12.0F, angle);
+		rotatePreviewPartAroundZ(model.leftLeg, 0.0F, 12.0F, angle);
+		resetPlayerOverlayTransforms(model);
 	}
 
-	private static void applyKidsDraggedPreviewOrientation(PlayerModel model) {
-		float angle = (float)(Math.PI / 2.0);
-		rotatePreviewPart(model.head, angle);
-		rotatePreviewPart(model.body, angle);
-		rotatePreviewPart(model.rightArm, angle);
-		rotatePreviewPart(model.leftArm, angle);
-		rotatePreviewPart(model.rightLeg, angle);
-		rotatePreviewPart(model.leftLeg, angle);
-	}
-
-	private static void rotatePreviewPart(net.minecraft.client.model.geom.ModelPart part, float angle) {
-		float pivotY = 12.0F;
-		float x = part.x;
-		float y = part.y - pivotY;
+	private static void rotatePreviewPartAroundZ(ModelPart part, float pivotX, float pivotY, float angle) {
+		float translatedX = part.x - pivotX;
+		float translatedY = part.y - pivotY;
 		float cosine = Mth.cos(angle);
 		float sine = Mth.sin(angle);
-		part.x = x * cosine - y * sine;
-		part.y = pivotY + x * sine + y * cosine;
+		part.x = pivotX + translatedX * cosine - translatedY * sine;
+		part.y = pivotY + translatedX * sine + translatedY * cosine;
 		part.zRot += angle;
 	}
 
 	private static void resetPlayerOverlayTransforms(PlayerModel model) {
+		// In 26.1.2 these outer layers are children of their matching body parts.
+		// Keeping their local pose at zero lets them inherit the horizontal preview
+		// transform exactly once instead of duplicating the parent's rotation.
 		model.hat.resetPose();
 		model.leftSleeve.resetPose();
 		model.rightSleeve.resetPose();
@@ -1563,12 +1882,17 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 		entity.swinging = false;
 		entity.swingingArm = InteractionHand.MAIN_HAND;
 		LivingEntity source = this.minecraft == null ? null : this.minecraft.player;
-		entity.setItemSlot(EquipmentSlot.HEAD, this.copyEquipment(source, EquipmentSlot.HEAD, this.config.playerGhostArmorEnabled));
-		entity.setItemSlot(EquipmentSlot.CHEST, this.copyEquipment(source, EquipmentSlot.CHEST, this.config.playerGhostArmorEnabled));
-		entity.setItemSlot(EquipmentSlot.LEGS, this.copyEquipment(source, EquipmentSlot.LEGS, this.config.playerGhostArmorEnabled));
-		entity.setItemSlot(EquipmentSlot.FEET, this.copyEquipment(source, EquipmentSlot.FEET, this.config.playerGhostArmorEnabled));
-		entity.setItemInHand(InteractionHand.MAIN_HAND, this.copyHandStack(source, InteractionHand.MAIN_HAND, this.config.playerGhostHeldItemsEnabled));
-		entity.setItemInHand(InteractionHand.OFF_HAND, this.copyHandStack(source, InteractionHand.OFF_HAND, this.config.playerGhostHeldItemsEnabled));
+		if (source != null) {
+			entity.snapTo(source.getX(), source.getY(), source.getZ(), 180.0F, 0.0F);
+		}
+		boolean showArmor = this.currentEffectTab != EffectTab.PLAYER || this.config.playerGhostArmorEnabled;
+		boolean showHeldItems = this.currentEffectTab != EffectTab.PLAYER || this.config.playerGhostHeldItemsEnabled;
+		entity.setItemSlot(EquipmentSlot.HEAD, this.copyEquipment(source, EquipmentSlot.HEAD, showArmor));
+		entity.setItemSlot(EquipmentSlot.CHEST, this.copyEquipment(source, EquipmentSlot.CHEST, showArmor));
+		entity.setItemSlot(EquipmentSlot.LEGS, this.copyEquipment(source, EquipmentSlot.LEGS, showArmor));
+		entity.setItemSlot(EquipmentSlot.FEET, this.copyEquipment(source, EquipmentSlot.FEET, showArmor));
+		entity.setItemInHand(InteractionHand.MAIN_HAND, this.copyHandStack(source, InteractionHand.MAIN_HAND, showHeldItems));
+		entity.setItemInHand(InteractionHand.OFF_HAND, this.copyHandStack(source, InteractionHand.OFF_HAND, showHeldItems));
 	}
 
 	private ItemStack copyEquipment(LivingEntity source, EquipmentSlot slot, boolean enabled) {
@@ -1730,6 +2054,9 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 		if (x + boxWidth > this.width - 6) {
 			x = this.tooltipAnchorX - boxWidth - 8;
 		}
+		if (this.currentTab == MainTab.EFFECTS && this.previewWidth > 0 && this.tooltipAnchorX < this.previewX) {
+			x = Math.min(x, this.previewX - boxWidth - 6);
+		}
 		if (y + boxHeight > this.height - 6) {
 			y = this.tooltipAnchorY - boxHeight - 8;
 		}
@@ -1823,7 +2150,7 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 			return;
 		}
 
-		int trackX = this.panelX + this.panelWidth - 10;
+		int trackX = Math.min(this.optionsX + this.optionsWidth + 3, this.panelX + this.panelWidth - 8);
 		int trackHeight = this.optionsScrollBottom - this.optionsScrollTop;
 		int contentHeight = trackHeight + this.maxScroll;
 		int thumbHeight = Mth.clamp(trackHeight * trackHeight / contentHeight, 18, trackHeight);
@@ -1862,53 +2189,63 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 	}
 
 	private void computeLayout() {
-		int horizontalMargin = this.width < 560 ? 12 : this.width < 760 ? 48 : 80;
-		int verticalMargin = this.height < 320 ? 12 : this.height < 460 ? 54 : 72;
+		int horizontalMargin = this.width < 400 ? 10 : this.width < 560 ? 16 : this.width < 760 ? 32 : 56;
+		int verticalMargin = this.height < 240 ? 10 : this.height < 320 ? 16 : this.height < 460 ? 28 : 48;
 		int maxPanelWidth = Math.max(1, this.width - horizontalMargin);
 		int maxPanelHeight = Math.max(1, this.height - verticalMargin);
-		int minPanelWidth = Math.min(360, maxPanelWidth);
-		int minPanelHeight = Math.min(220, maxPanelHeight);
-		int preferredWidth = this.width < 760 ? maxPanelWidth : 860;
-		int preferredHeight = this.height < 460 ? maxPanelHeight : 520;
+		int minPanelWidth = Math.min(340, maxPanelWidth);
+		int minPanelHeight = Math.min(204, maxPanelHeight);
+		int preferredWidth = Math.min(920, Math.round(this.width * 0.92F));
+		int preferredHeight = Math.min(540, Math.round(this.height * 0.90F));
 		this.panelWidth = Mth.clamp(preferredWidth, minPanelWidth, maxPanelWidth);
 		this.panelHeight = Mth.clamp(preferredHeight, minPanelHeight, maxPanelHeight);
 		this.panelX = (this.width - this.panelWidth) / 2;
 		this.panelY = (this.height - this.panelHeight) / 2;
-		this.sidebarWidth = 0;
-		int contentPadding = this.panelWidth < 520 ? 12 : 18;
-		int headerHeight = this.panelHeight < 300 ? 56 : 66;
+		int contentPadding = this.panelWidth < 520 ? 12 : this.panelWidth < 720 ? 16 : 20;
+		this.headerHeight = this.panelHeight < 250 ? 50 : this.panelHeight < 340 ? 56 : 62;
+		this.footerHeight = this.panelHeight < 250 ? 32 : 38;
 		this.contentX = this.panelX + contentPadding;
-		this.contentY = this.panelY + headerHeight;
+		this.contentY = this.panelY + this.headerHeight;
 		this.contentWidth = this.panelWidth - contentPadding * 2;
 
-		int footerTop = this.panelY + this.panelHeight - 36;
+		int footerTop = this.panelY + this.panelHeight - this.footerHeight;
 		if (this.currentTab == MainTab.EFFECTS) {
-			this.optionsX = this.contentX;
-			this.optionsY = this.contentY + 26;
-			int previewGap = this.contentWidth < 420 ? 8 : 14;
-			int previewAvailableHeight = footerTop - (this.contentY + 28) - 8;
+			int contentAvailableHeight = footerTop - this.contentY - 4;
+			// The preview has priority. A sidebar is useful only on genuinely wide
+			// layouts; enabling it at 4x GUI scale used to consume the width that
+			// the preview needed and made the preview disappear completely.
+			this.sidebarWidth = this.contentWidth >= 720 && contentAvailableHeight >= 180
+				? Mth.clamp((int)(this.contentWidth * 0.13F), 82, 106)
+				: 0;
+			int sidebarGap = this.sidebarWidth > 0 ? 12 : 0;
+			int mainX = this.contentX + this.sidebarWidth + sidebarGap;
+			int mainWidth = this.contentWidth - this.sidebarWidth - sidebarGap;
+			this.optionsX = mainX;
+			this.optionsY = this.contentY;
+			int previewGap = mainWidth < 520 ? 8 : 12;
+			int previewAvailableHeight = contentAvailableHeight;
 			this.previewWidth = 0;
 			this.previewHeight = 0;
 			this.previewX = 0;
 			this.previewY = 0;
-			if (this.contentWidth >= 300 && previewAvailableHeight >= 66) {
-				int wantedPreviewWidth = Mth.clamp((int)(this.contentWidth * 0.30F), 96, 172);
-				int minOptionsWidth = this.contentWidth < 420 ? 236 : 260;
-				int maxPreviewWidth = Math.max(0, this.contentWidth - previewGap - minOptionsWidth);
+			if (mainWidth >= 308 && previewAvailableHeight >= 112) {
+				int wantedPreviewWidth = Mth.clamp((int)(mainWidth * 0.36F), 132, 300);
+				int minOptionsWidth = mainWidth < 420 ? 168 : mainWidth < 560 ? 220 : 270;
+				int maxPreviewWidth = Math.max(0, mainWidth - previewGap - minOptionsWidth);
 				this.previewWidth = Math.min(wantedPreviewWidth, maxPreviewWidth);
-				if (this.previewWidth >= 86) {
-					int maxPreviewHeight = Math.min(150, previewAvailableHeight);
-					this.previewHeight = Math.max(66, maxPreviewHeight);
+				if (this.previewWidth >= 128) {
+					this.previewHeight = previewAvailableHeight;
 					this.previewX = this.contentX + this.contentWidth - this.previewWidth;
-					this.previewY = this.contentY + 28;
+					this.previewY = this.contentY;
 				} else {
 					this.previewWidth = 0;
 					this.previewHeight = 0;
 				}
 			}
-			this.optionsWidth = this.previewWidth > 0 ? Math.max(170, this.previewX - this.optionsX - previewGap) : this.contentWidth;
-			this.optionsScrollTop = this.optionsY + 34;
+			this.optionsWidth = this.previewWidth > 0 ? Math.max(168, this.previewX - this.optionsX - previewGap) : mainWidth;
+			this.optionsScrollTop = this.optionsY + (this.sidebarWidth > 0 ? 26 : 24);
 		} else {
+			this.sidebarWidth = 0;
 			this.previewX = 0;
 			this.previewY = 0;
 			this.previewWidth = 0;
@@ -1916,7 +2253,7 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 			this.optionsX = this.contentX;
 			this.optionsY = this.contentY;
 			this.optionsWidth = this.contentWidth;
-			this.optionsScrollTop = this.optionsY + 28;
+			this.optionsScrollTop = this.optionsY + 24;
 		}
 
 		this.optionsScrollBottom = footerTop - 4;
@@ -2073,10 +2410,15 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 			&& (this.currentEffectTab == EffectTab.SILHOUETTE
 				|| this.currentEffectTab == EffectTab.PLAYER
 				|| this.currentEffectTab == EffectTab.RAGDOLL
+				|| this.currentEffectTab == EffectTab.KIDS
 				|| this.currentEffectTab == EffectTab.MORPH);
 	}
 
 	private float previewProgress() {
+		if (this.previewPaused) {
+			return this.pausedPreviewProgress;
+		}
+
 		int durationSeconds = switch (this.currentEffectTab) {
 			case PLAYER -> this.config.playerGhostDurationSeconds;
 			case RAGDOLL -> 6;
@@ -2089,7 +2431,60 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 	}
 
 	private void restartPreview() {
+		this.pausedPreviewProgress = 0.0F;
 		this.previewStartedAt = Util.getMillis();
+		this.previewSimulationDirty = true;
+		this.previewFrame = null;
+	}
+
+	private void updatePreviewSimulation() {
+		if (this.currentEffectTab == EffectTab.KIDS) {
+			this.previewSimulation.clear();
+			this.previewSimulationDirty = false;
+			this.previewFrame = null;
+			return;
+		}
+
+		if (this.previewSimulationDirty) {
+			PreviewPlayerEntity entity = this.getPreviewPlayer();
+			if (entity == null) {
+				this.previewFrame = null;
+				return;
+			}
+
+			this.preparePreviewPlayer(entity);
+			this.previewSimulation.restart(entity, this.config);
+			this.previewSimulationDirty = false;
+		}
+
+		this.previewFrame = this.previewSimulation.frame(this.previewPaused);
+	}
+
+	private void togglePreviewPaused() {
+		if (this.previewPaused) {
+			long durationMillis = this.previewDurationMillis();
+			this.previewStartedAt = Util.getMillis() - (long)(this.pausedPreviewProgress * durationMillis);
+			this.previewPaused = false;
+		} else {
+			this.pausedPreviewProgress = this.previewProgress();
+			this.previewPaused = true;
+		}
+	}
+
+	private long previewDurationMillis() {
+		int durationSeconds = switch (this.currentEffectTab) {
+			case PLAYER -> this.config.playerGhostDurationSeconds;
+			case RAGDOLL, KIDS -> 6;
+			case MORPH -> this.config.morphElevationTimeSeconds;
+			case SILHOUETTE -> this.config.silhouetteDurationSeconds;
+		};
+		return Math.max(1000L, durationSeconds * 1000L);
+	}
+
+	private void resetPreviewView() {
+		this.morphPreviewYawOffset = 0.0F;
+		this.morphPreviewPitchOffset = 0.0F;
+		this.morphPreviewZoom = 1.0F;
 	}
 
 	private void applyColorText(String value) {
@@ -2097,6 +2492,7 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 		if (normalized.length() == 6 && normalized.matches("[0-9A-Fa-f]{6}")) {
 			this.config.silhouetteColor = Integer.parseInt(normalized, 16);
 			this.config.save();
+			this.restartPreview();
 			this.colorField.setTextColor(COLOR_TEXT);
 		} else {
 			this.colorField.setTextColor(0xFFFF7777);
@@ -2240,6 +2636,8 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 		private final IntConsumer onValueChanged;
 		private final IntFunction<String> formatter;
 		private int currentValue;
+		private double animatedValue;
+		private long lastRenderMillis = Util.getMillis();
 
 		private PurpleIntSliderWidget(
 			int x,
@@ -2260,6 +2658,7 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 			this.onValueChanged = onValueChanged;
 			this.formatter = formatter;
 			this.currentValue = snap(initialValue, minimum, maximum, this.step);
+			this.animatedValue = this.value;
 		}
 
 		@Override
@@ -2284,12 +2683,16 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 
 		@Override
 		public void extractWidgetRenderState(GuiGraphicsExtractor context, int mouseX, int mouseY, float deltaTicks) {
+			long now = Util.getMillis();
+			float frame = Mth.clamp((now - this.lastRenderMillis) / 90.0F, 0.08F, 1.0F);
+			this.lastRenderMillis = now;
+			this.animatedValue = Mth.lerp(frame, (float)this.animatedValue, (float)this.value);
 			int fill = this.active ? COLOR_PANEL_SOFT : 0x6630203F;
 			int border = this.isHovered() || this.isFocused() ? COLOR_TEXT : COLOR_BORDER;
 			int trackLeft = this.getX() + 4;
 			int trackRight = this.getRight() - 4;
 			int trackTop = this.getY() + this.getHeight() / 2 - 2;
-			int handleX = trackLeft + (int)Math.round(this.value * (trackRight - trackLeft));
+			int handleX = trackLeft + (int)Math.round(this.animatedValue * (trackRight - trackLeft));
 
 			context.fill(this.getX(), this.getY(), this.getRight(), this.getBottom(), fill);
 			context.outline(this.getX(), this.getY(), this.getWidth(), this.getHeight(), border);
@@ -2320,6 +2723,9 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 	private static final class PurpleButtonWidget extends AbstractWidget {
 		private final ButtonTone tone;
 		private final PurplePressAction onPress;
+		private float hoverAnimation;
+		private long lastRenderMillis = Util.getMillis();
+		private long pressedAtMillis = Long.MIN_VALUE;
 
 		private PurpleButtonWidget(int x, int y, int width, int height, Component message, PurplePressAction onPress, ButtonTone tone) {
 			super(x, y, width, height, message);
@@ -2329,6 +2735,12 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 
 		@Override
 		protected void extractWidgetRenderState(GuiGraphicsExtractor context, int mouseX, int mouseY, float deltaTicks) {
+			long now = Util.getMillis();
+			float frame = Mth.clamp((now - this.lastRenderMillis) / 90.0F, 0.08F, 1.0F);
+			this.lastRenderMillis = now;
+			this.hoverAnimation = Mth.lerp(frame, this.hoverAnimation, this.isHovered() && this.active ? 1.0F : 0.0F);
+			float pressAnimation = Mth.clamp(1.0F - (now - this.pressedAtMillis) / 90.0F, 0.0F, 1.0F);
+			int pressOffset = pressAnimation > 0.35F ? 1 : 0;
 			int fill = switch (this.tone) {
 				case SELECTED -> COLOR_PURPLE_SOFT;
 				case PRIMARY -> 0xCC7C3CFF;
@@ -2346,13 +2758,21 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 				border = COLOR_TEXT;
 			}
 
-			context.fill(this.getX(), this.getY(), this.getRight(), this.getBottom(), fill);
-			context.outline(this.getX(), this.getY(), this.getWidth(), this.getHeight(), border);
+			if (this.hoverAnimation > 0.02F) {
+				int glowAlpha = Mth.clamp(Math.round(this.hoverAnimation * 52.0F), 0, 52);
+				context.fill(this.getX() - 1, this.getY() - 1, this.getRight() + 1, this.getBottom() + 1, ARGB.color(glowAlpha, 0xB96BFF));
+			}
+			context.fill(this.getX(), this.getY() + pressOffset, this.getRight(), this.getBottom() + pressOffset, fill);
+			context.outline(this.getX(), this.getY() + pressOffset, this.getWidth(), this.getHeight(), border);
+			if (this.tone == ButtonTone.PRIMARY || this.tone == ButtonTone.SELECTED) {
+				context.fill(this.getX() + 1, this.getBottom() - 2 + pressOffset, this.getRight() - 1, this.getBottom() + pressOffset, COLOR_PURPLE);
+			}
 			drawCenteredButtonText(context, this, text);
 		}
 
 		@Override
 		public void onClick(MouseButtonEvent click, boolean doubleClick) {
+			this.pressedAtMillis = Util.getMillis();
 			this.onPress.onPress(this);
 		}
 
@@ -2552,6 +2972,7 @@ public final class KohsDeathEffectsConfigScreen extends Screen {
 			this.parent.previewMorphEntity = null;
 			this.parent.previewMorphEntityId = "";
 			this.parent.config.save();
+			this.parent.restartPreview();
 			this.onClose();
 			return true;
 		}

@@ -19,6 +19,7 @@ import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderEvents;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.AbstractClientPlayer;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.damagesource.DamageTypes;
 import net.minecraft.world.entity.player.Player;
@@ -75,12 +76,14 @@ public final class DeathEffectManager {
 			return;
 		}
 		DamageSource recentDamageSource = player.getLastDamageSource();
+		Player playerKiller = resolvePlayerKiller(player, recentDamageSource);
 		try {
 			this.effects.add(RisingSilhouetteEffect.from(
 				player,
 				config,
 				isExplosionDamage(recentDamageSource),
-				recentDamageSource == null ? null : recentDamageSource.getSourcePosition()
+				recentDamageSource == null ? null : recentDamageSource.getSourcePosition(),
+				playerKiller
 			));
 		} catch (RuntimeException | LinkageError exception) {
 			KohsDeathEffects.LOGGER.error("Unable to create death effect mode {}", config.deathEffectMode, exception);
@@ -90,6 +93,23 @@ public final class DeathEffectManager {
 	private static boolean isExplosionDamage(DamageSource damageSource) {
 		return damageSource != null
 			&& (damageSource.is(DamageTypes.EXPLOSION) || damageSource.is(DamageTypes.PLAYER_EXPLOSION));
+	}
+
+	private static Player resolvePlayerKiller(Player victim, DamageSource damageSource) {
+		Entity attacker = damageSource == null ? null : damageSource.getEntity();
+		if (attacker instanceof Player player && !player.getUUID().equals(victim.getUUID())) {
+			return player;
+		}
+
+		Player recentPlayer = victim.getLastHurtByPlayer();
+		if (recentPlayer != null && !recentPlayer.getUUID().equals(victim.getUUID())) {
+			return recentPlayer;
+		}
+
+		if (victim.getLastAttacker() instanceof Player player && !player.getUUID().equals(victim.getUUID())) {
+			return player;
+		}
+		return null;
 	}
 
 	private static Vec3 entityPosition(Player player) {

@@ -19,6 +19,7 @@ import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.rendering.v1.world.WorldRenderEvents;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.AbstractClientPlayerEntity;
+import net.minecraft.entity.Entity;
 import net.minecraft.entity.damage.DamageSource;
 import net.minecraft.entity.damage.DamageTypes;
 import net.minecraft.entity.player.PlayerEntity;
@@ -75,12 +76,14 @@ public final class DeathEffectManager {
 			return;
 		}
 		DamageSource recentDamageSource = player.getRecentDamageSource();
+		PlayerEntity playerKiller = resolvePlayerKiller(player, recentDamageSource);
 		try {
 			this.effects.add(RisingSilhouetteEffect.from(
 				player,
 				config,
 				isExplosionDamage(recentDamageSource),
-				recentDamageSource == null ? null : recentDamageSource.getPosition()
+				recentDamageSource == null ? null : recentDamageSource.getPosition(),
+				playerKiller
 			));
 		} catch (RuntimeException | LinkageError exception) {
 			KohsDeathEffects.LOGGER.error("Unable to create death effect mode {}", config.deathEffectMode, exception);
@@ -90,6 +93,18 @@ public final class DeathEffectManager {
 	private static boolean isExplosionDamage(DamageSource damageSource) {
 		return damageSource != null
 			&& (damageSource.isOf(DamageTypes.EXPLOSION) || damageSource.isOf(DamageTypes.PLAYER_EXPLOSION));
+	}
+
+	private static PlayerEntity resolvePlayerKiller(PlayerEntity victim, DamageSource damageSource) {
+		Entity attacker = damageSource == null ? null : damageSource.getAttacker();
+		if (attacker instanceof PlayerEntity player && !player.getUuid().equals(victim.getUuid())) {
+			return player;
+		}
+
+		if (victim.getLastAttacker() instanceof PlayerEntity player && !player.getUuid().equals(victim.getUuid())) {
+			return player;
+		}
+		return null;
 	}
 
 	private static Vec3d entityPosition(PlayerEntity player) {
